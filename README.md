@@ -10,9 +10,21 @@ Strings emit themselves.
 # DNAcompiler
 
 # 40 + 2
+
+
 K 40
+
 K 2
+
 A
+
 Y
+
 K 10 W
+
 H
+
+
+2. Packed DNA (.dna)compile --dna writes a FASTA file:
+
+
