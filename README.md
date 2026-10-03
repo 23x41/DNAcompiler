@@ -1,3 +1,5 @@
+python3 GATC46.py compile newops.aa --dna -o program.dna
+
 1. Amino-acid assembly (.aa)
 2. Each letter is an opcode.
 3.  K (Lysine / LIT) pushes a number.
