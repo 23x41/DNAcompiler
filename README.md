@@ -5,7 +5,25 @@ M is multiply.
 H is halt.
 Strings emit themselves.
 
-
+## 46 opcodes
+The instruction set is 46 opcodes, one for each human chromosome. See OPCODES46.md. The original 36 are unchanged. These ten are assembly-only; gene mode still emits the natural amino-acid letters.
+| Sym | Name | Stack | ............Meaning |
+|-----|------|---------------|---------------|| 
+|`*` | JNZ | `(flag addr --)` | jump if flag != 0 ||
+|`@` |ROT | `(a b c -- b c a)` | rotate top three |
+| `&` | NIP | `(a b -- b)` | drop the second |
+| `=` | NE | `(a b -- flag)` | 1 if a != b |
+| `/` | GE | `(a b -- flag)` | 1 if a >= b |
+| `^` | LE | `(a b -- flag)` | 1 if a <= b |
+| `\|` | MAX | `(a b -- max)` | greater of two |
+| `;` | MIN | `(a b -- min)` | lesser of two |
+| `.` | ABS | `(a -- \|a\|)` | absolute value |
+| `,` | DEPTH | `(-- n)` | push stack depth |
+Word forms: `JNZ ROT NIP NE GE LE MAX MIN ABS DEPTH`. A bare `-` is still `DEC`; `-` followed by a digit is still a negative literal.
+```bash
+python3 GATC46.py opcodes
+python3 GATC46.py run program.aa --no-banner
+python3 GATC46.py compile program.aa --dna -o program.dna
 
 # DNAcompiler
 
