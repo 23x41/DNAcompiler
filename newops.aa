@@ -1,0 +1,17 @@
+# max(|-8|, 5), then depth, then jump if the result is nonzero
+K -8
+.            # ABS: -8 -> 8
+K 5
+|            # MAX: max(8, 5) -> 8
+D
+Y            # print 8
+K 32 W       # space
+,            # DEPTH: one value still on the stack
+Y            # print 1
+K 10 W       # newline
+K DONE
+*            # JNZ: 8 != 0, so skip the X
+K 88 W       # would print X
+:DONE
+K 90 W       # print Z
+H
