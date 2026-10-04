@@ -1,0 +1,1348 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+4 0 obj
+<< /Length 4932 >>
+stream
+BT
+0.10 0.22 0.28 rg
+/F2 16 Tf
+1 0 0 1 54.0 728.0 Tm (HolyGATC / GATC46) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 707.0 Tm (An educational manual for a genome-sequence compiler and stack virtual machine. Version) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 694.0 Tm (covered: GATC46.py 1.1.0, repository 23x41/DNAcompiler.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 678.0 Tm (This is recreational systems programming. The genetic code is used as a naming scheme and an) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 665.0 Tm (encoding. It is not a biology protocol, and a .dna file from this compiler is not a) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 652.0 Tm (laboratory sequence.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 624.0 Tm (What you are learning) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 607.0 Tm (A compiler reads text a person wrote and turns it into a smaller form a machine can execute.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 594.0 Tm (An interpreter or virtual machine then walks that form one instruction at a time. HolyGATC) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 581.0 Tm (does both jobs in one Python file.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 565.0 Tm (The machine underneath is a stack computer. There are no named registers. Values sit on a) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 552.0 Tm (pile. The top of the pile is called TOS. Most instructions take their inputs from the top) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 539.0 Tm (and leave their result there. Forth programmers write the effect as \(before -- after\).) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 526.0 Tm (Example: ADD is \(a b -- a+b\). That means it pops b, pops a, and pushes a+b.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 510.0 Tm (Three representations of the same program are the point of the project:) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 494.0 Tm (- Amino-acid assembly \(.aa\). Letters and words a person writes. K is LIT, A is ADD, H is) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 481.0 Tm (  HALT.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 467.0 Tm (- Bytecode \(.gbc\). One opcode byte, plus a 4-byte little-endian immediate when the) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 454.0 Tm (  opcode needs one. LIT is the only opcode with an immediate.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 440.0 Tm (- Packed DNA \(.dna\). That bytecode wrapped as a FASTA record: ATG, a 16-bit length, the) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 427.0 Tm (  payload in base-4, then TAA.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 413.0 Tm (A fourth path, gene mode, does not store bytecode. It pretends to be a ribosome: find ATG,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 400.0 Tm (read codons, translate them with the standard genetic code, and treat the amino-acid letter) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 387.0 Tm (as an opcode.) Tj
+0.10 0.22 0.28 rg
+/F2 16 Tf
+1 0 0 1 54.0 363.0 Tm (1. How to run it) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 336.0 Tm (Requirements) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 319.0 Tm (Python 3. The compiler is one file, GATC46.py. No packages are required. From the directory) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 306.0 Tm (that contains the file:) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 290.0 Tm (python3 GATC46.py) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 278.0 Tm (python3 GATC46.py version) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 266.0 Tm (python3 GATC46.py opcodes) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 254.0 Tm (The first form prints the banner and help. version prints HolyGATC 1.1.0. opcodes prints the) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 241.0 Tm (46-row table.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 219.0 Tm (Commands) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 202.0 Tm (The first argument is the command. A filename alone is not enough. That is why `python3) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 189.0 Tm (GATC46.py newops.aa --dna -o newops.dna` fails: the command name compile is missing.) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 173.0 Tm (python3 GATC46.py run program.aa --no-banner) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 161.0 Tm (python3 GATC46.py disasm program.aa) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 149.0 Tm (python3 GATC46.py compile program.aa -o program.gbc) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 137.0 Tm (python3 GATC46.py compile program.aa --dna -o program.dna) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 125.0 Tm (python3 GATC46.py run program.dna --no-banner) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 113.0 Tm (python3 GATC46.py translate program.dna) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 101.0 Tm (python3 GATC46.py run --gene gene.dna --no-banner) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 89.0 Tm (python3 GATC46.py disasm --gene gene.dna) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 77.0 Tm (- run FILE: assemble or decode, then execute. A banner is printed to stderr unless) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 64.0 Tm (  --no-banner is set.) Tj
+0.4 0.4 0.4 rg
+/F1 8 Tf
+1 0 0 1 54 28 Tm (HolyGATC / GATC46 1.1.0  educational manual) Tj
+1 0 0 1 518 28 Tm (1 / 9) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Length 4529 >>
+stream
+BT
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 736.0 Tm (- compile FILE -o OUT: write raw bytecode. Add --dna to write a FASTA genome instead.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 722.0 Tm (- disasm FILE: print a numbered instruction listing. Addresses are instruction slots,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 709.0 Tm (  not byte offsets.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 695.0 Tm (- translate FILE: DNA bases to amino-acid letters, from the first ATG to a stop codon.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 681.0 Tm (- --gene: treat the file as a coding sequence, not as packed bytecode.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 667.0 Tm (- --max-steps N: stop a runaway loop. Default is 1,000,000 steps.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 653.0 Tm (Source suffixes .aa are assembly. Suffixes .dna, .gatc, .fa, .fasta, and .fna are treated as) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 640.0 Tm (DNA. A .gbc file is raw bytecode; a file whose first four bytes are GATC is also recognized) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 627.0 Tm (as a container.) Tj
+0.10 0.22 0.28 rg
+/F2 16 Tf
+1 0 0 1 54.0 603.0 Tm (2. Assembly language) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 576.0 Tm (Lexing rules) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 559.0 Tm (Whitespace is ignored. A # starts a comment that runs to the end of the line. A label is) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 546.0 Tm (:NAME and is stored uppercase. A bare name that is not an opcode pushes that label's) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 533.0 Tm (address, which is the same as writing K NAME.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 517.0 Tm (Numbers are decimal, negative decimal, or hex \(0x1A\). A bare number is a LIT. A minus) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 504.0 Tm (followed by a digit is a negative literal. A bare minus is the DEC opcode. Strings use) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 491.0 Tm (double quotes. Escapes are \\n, \\t, \\r, \\\\, and \\". A string does not push text. It emits,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 478.0 Tm (for each character, LIT of that character's code, then PUTC.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 462.0 Tm (An opcode may be written as its one-character symbol or as its word. Word aliases include) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 449.0 Tm (ADD, PUSH and LIT, HALT, PRINT for PUTN, EMIT for PUTC, and LOAD for FETCH. Only LIT takes) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 436.0 Tm (an operand in the source. Jumps do not. You push the address, then execute B, J, or *.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 414.0 Tm (Control shape) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 397.0 Tm (Labels are instruction indexes after assembly, counting expanded string instructions.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 384.0 Tm (Subroutines must sit after a jump to main, or execution falls into them.) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 368.0 Tm (K MAIN) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 356.0 Tm (B) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 344.0 Tm (:DOUBLE) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 332.0 Tm (D A) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 320.0 Tm (R) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 308.0 Tm (:MAIN) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 296.0 Tm (K 21) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 284.0 Tm (K DOUBLE) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 272.0 Tm (C) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 260.0 Tm (Y) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 248.0 Tm (H) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 236.0 Tm (Reading it: push the address of MAIN and jump there. Later, push 21, push the address of) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 223.0 Tm (DOUBLE, and call it. DOUBLE duplicates the top and adds, so 21 becomes 42, then returns. Y) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 210.0 Tm (prints 42. H stops.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 188.0 Tm (A complete program) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 171.0 Tm (Read one integer. Print n*n and n+n. Input 7 produces: digit? n*n=49 n+n=14) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 155.0 Tm ("digit? ") Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 143.0 Tm (I) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 131.0 Tm (D) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 119.0 Tm (D) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 107.0 Tm (M) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 95.0 Tm (Z) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 83.0 Tm (D) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 71.0 Tm (A) Tj
+0.4 0.4 0.4 rg
+/F1 8 Tf
+1 0 0 1 54 28 Tm (HolyGATC / GATC46 1.1.0  educational manual) Tj
+1 0 0 1 518 28 Tm (2 / 9) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Length 4606 >>
+stream
+BT
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 736.0 Tm (Z) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 724.0 Tm (" n*n=") Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 712.0 Tm (Y) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 700.0 Tm (" n+n=") Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 688.0 Tm (Y) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 676.0 Tm (K 10) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 664.0 Tm (W) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 652.0 Tm (H) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 640.0 Tm (Stack for input 7, rightmost is top. I leaves [7]. Two D instructions leave [7, 7, 7]. M) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 627.0 Tm (multiplies the top pair: [7, 49]. Z swaps: [49, 7]. D copies the 7: [49, 7, 7]. A adds the) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 614.0 Tm (top pair: [49, 14]. Z puts the product on top: [14, 49]. The first Y prints 49. The second Y) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 601.0 Tm (prints 14. K 10 W writes a newline. H halts.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 585.0 Tm (The extra swaps exist because MUL and ADD both consume the top two values. One copy of n has) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 572.0 Tm (to survive underneath the product, then be brought back to the top so it can be added to) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 559.0 Tm (itself.) Tj
+0.10 0.22 0.28 rg
+/F2 16 Tf
+1 0 0 1 54.0 535.0 Tm (3. The 46 opcodes) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 514.0 Tm (Forty-six opcodes, one for each human chromosome, is the project's framing. The first 36) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 501.0 Tm (match the older HolyGATC set. The last ten use symbols that are not amino-acid letters, so) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 488.0 Tm (gene mode cannot emit them. In the table, Sym is what you write, Byte is the bytecode value,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 475.0 Tm (and Imm means a 4-byte immediate follows the opcode.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 459.0 Tm (Stack notation: a is deeper, b is on top, unless three values are shown. Flag is 1 or 0.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 446.0 Tm (Division is integer division.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 424.0 Tm (Arithmetic) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 404.0 Tm (A  ADD  0x01  \(a b -- a+b\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 390.0 Tm (Pop b, pop a, push a+b. No overflow trap; Python integers are unbounded, so the VM does not) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 377.0 Tm (wrap. Use it for sums and, with DUP, for doubling: D A turns n into n+n.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 358.0 Tm (S  SUB  0x13  \(a b -- a-b\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 344.0 Tm (Pop b, pop a, push a-b. Order matters. The deeper value is the minuend. To compute 10-3,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 331.0 Tm (push 10, push 3, then S.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 312.0 Tm (M  MUL  0x0D  \(a b -- a*b\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 298.0 Tm (Pop b, pop a, push a*b. D M squares the top value. Gene mode spells MUL as methionine, whose) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 285.0 Tm (only codon is ATG, which is also the start codon. After the skipped start codon, a later ATG) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 272.0 Tm (is multiply.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 253.0 Tm (V  DIV  0x16  \(a b -- a/b\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 239.0 Tm (Integer divide, a//b. Division by zero is a GATCError. The remainder is discarded. Negative) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 226.0 Tm (division follows Python's floor rule.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 207.0 Tm (%  MOD  0x1C  \(a b -- a%b\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 193.0 Tm (Remainder of a divided by b. Modulo by zero is an error. Useful for even/odd tests: K 2 %) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 180.0 Tm (then N, or compare the remainder with zero.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 161.0 Tm (~  NEG  0x1D  \(a -- -a\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 147.0 Tm (Replace the top with its negation. Assembly symbol is tilde, not a letter, so gene mode) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 134.0 Tm (cannot emit it.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 115.0 Tm (+  INC  0x23  \(a -- a+1\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 101.0 Tm (Add one to the top. Shorter than K 1 A.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 82.0 Tm (-  DEC  0x24  \(a -- a-1\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 68.0 Tm (Subtract one from the top. A minus glued to a digit is a negative literal, not DEC. Write) Tj
+0.4 0.4 0.4 rg
+/F1 8 Tf
+1 0 0 1 54 28 Tm (HolyGATC / GATC46 1.1.0  educational manual) Tj
+1 0 0 1 518 28 Tm (3 / 9) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Length 3890 >>
+stream
+BT
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 736.0 Tm (the opcode as a separate token.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 717.0 Tm (.  ABS  0x2D  \(a -- |a|\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 703.0 Tm (Replace the top with its absolute value. Assembly-only. Word form: ABS.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 681.0 Tm (Comparison and logic) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 664.0 Tm (Comparisons push 1 for true and 0 for false. Bitwise operations use Python's) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 651.0 Tm (arbitrary-precision integers. NOT is logical, not bitwise: it is 1 only when the top is) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 638.0 Tm (exactly zero.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 619.0 Tm (E  EQ  0x05  \(a b -- flag\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 605.0 Tm (1 if a equals b, else 0.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 586.0 Tm (L  LT  0x0C  \(a b -- flag\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 572.0 Tm (1 if a < b. Deeper value is the left operand.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 553.0 Tm (G  GT  0x07  \(a b -- flag\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 539.0 Tm (1 if a > b.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 520.0 Tm (=  NE  0x28  \(a b -- flag\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 506.0 Tm (1 if a != b. Assembly-only. Word form: NE.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 487.0 Tm (/  GE  0x29  \(a b -- flag\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 473.0 Tm (1 if a >= b. Assembly-only. The slash is not DIV. DIV is V.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 454.0 Tm (^  LE  0x2A  \(a b -- flag\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 440.0 Tm (1 if a <= b. Assembly-only.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 421.0 Tm (|  MAX  0x2B  \(a b -- max\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 407.0 Tm (Push the greater of the two popped values. Assembly-only.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 388.0 Tm (;  MIN  0x2C  \(a b -- min\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 374.0 Tm (Push the lesser of the two. Assembly-only.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 355.0 Tm (N  NOT  0x0E  \(a -- flag\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 341.0 Tm (1 if a is 0, else 0. This is the flag inverter for JZ and JNZ.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 322.0 Tm (P  AND  0x10  \(a b -- a&b\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 308.0 Tm (Bitwise and.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 289.0 Tm (O  OR  0x0F  \(a b -- a|b\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 275.0 Tm (Bitwise or. O is a synthetic letter, not an amino acid, so gene mode cannot emit it.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 256.0 Tm (X  XOR  0x18  \(a b -- a^b\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 242.0 Tm (Bitwise exclusive or. Also synthetic, so assembly-only in gene mode.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 223.0 Tm (<  SHL  0x20  \(a b -- a<<b\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 209.0 Tm (Shift a left by b bits. The shift count is masked with 31, so only the low 5 bits count.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 190.0 Tm (>  SHR  0x21  \(a b -- a>>b\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 176.0 Tm (Arithmetic right shift of a by b, again masked with 31.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 154.0 Tm (Stack manipulation) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 134.0 Tm (D  DUP  0x04  \(a -- a a\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 120.0 Tm (Copy the top. Underflow is an error. This is how you keep a value and also operate on it.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 101.0 Tm (Z  SWAP  0x1A  \(a b -- b a\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 87.0 Tm (Exchange the top two. Synthetic letter. Needed whenever an operation would consume a value) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 74.0 Tm (you still need underneath.) Tj
+0.4 0.4 0.4 rg
+/F1 8 Tf
+1 0 0 1 54 28 Tm (HolyGATC / GATC46 1.1.0  educational manual) Tj
+1 0 0 1 518 28 Tm (4 / 9) Tj
+ET
+endstream
+endobj
+8 0 obj
+<< /Length 4462 >>
+stream
+BT
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 733.0 Tm (U  OVER  0x15  \(a b -- a b a\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 719.0 Tm (Copy the second value onto the top. Synthetic letter.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 700.0 Tm (!  DROP  0x1E  \(a --\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 686.0 Tm (Discard the top. Symbol is an exclamation mark.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 667.0 Tm (&  NIP  0x27  \(a b -- b\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 653.0 Tm (Drop the second value and keep the top. Assembly-only. Word form: NIP.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 634.0 Tm (@  ROT  0x26  \(a b c -- b c a\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 620.0 Tm (Rotate the top three: the deepest of the three becomes the new top. Assembly-only. Word) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 607.0 Tm (form: ROT.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 588.0 Tm (,  DEPTH  0x2E  \(-- n\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 574.0 Tm (Push the number of values currently on the stack, not counting the count itself. Empty stack) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 561.0 Tm (pushes 0. Assembly-only. Word form: DEPTH. It does not read memory and does not consume an) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 548.0 Tm (argument.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 529.0 Tm (_  NOP  0x1B  \(--\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 515.0 Tm (Do nothing and advance the program counter. Packed DNA spelling of the single opcode byte) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 502.0 Tm (0x1B is ACGT, because 00011011 groups as 00 01 10 11 and those pairs are A, C, G, T. There) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 489.0 Tm (is no gene-mode codon for NOP.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 467.0 Tm (Literals, memory, and random) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 447.0 Tm (K  LIT  0x0B  imm  \(-- n\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 433.0 Tm (The only instruction with an immediate. In assembly, K 7 or a bare 7 pushes 7. In bytecode) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 420.0 Tm (the opcode byte is followed by the value as 4 little-endian bytes. In gene mode, lysine \(AAA) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 407.0 Tm (or AAG\) means LIT, and the next codon is the number, base 4, range 0 to 63. A=0, C=1, G=2,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 394.0 Tm (T=3. GGA is 2*16+2*4+0 = 40.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 375.0 Tm (T  STORE  0x14  \(val addr --\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 361.0 Tm (Write val into memory[addr]. Address is on top. Memory is 4096 cells, indexed from 0. Out of) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 348.0 Tm (range is an error.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 329.0 Tm (F  FETCH  0x06  \(addr -- val\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 315.0 Tm (Replace an address with memory[addr]. Word alias: LOAD. Cells start at 0.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 296.0 Tm ($  RAND  0x22  \(n -- r\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 282.0 Tm (Push a random integer in [0, n\). If n is less than or equal to 0, push 0. Uses Python's) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 269.0 Tm (random.randrange.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 247.0 Tm (Control) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 227.0 Tm (B  JMP  0x02  \(addr --\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 213.0 Tm (Pop an address and set the program counter to it. Addresses are instruction indexes. Typical) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 200.0 Tm (source shape is K LABEL then B. B is synthetic, not an amino acid.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 181.0 Tm (J  JZ  0x0A  \(flag addr --\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 167.0 Tm (Pop the address, pop the flag. Jump if the flag is 0. Otherwise go to the next instruction.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 154.0 Tm (Typical shape: push the condition, push the label, then J.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 135.0 Tm (*  JNZ  0x25  \(flag addr --\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 121.0 Tm (Jump if the flag is not 0. Assembly-only. Word form: JNZ.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 102.0 Tm (C  CALL  0x03  \(addr --\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 88.0 Tm (Push the return address on a separate call stack, then jump. The return address is the) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 75.0 Tm (instruction after the CALL. Call depth limit is 4096.) Tj
+0.4 0.4 0.4 rg
+/F1 8 Tf
+1 0 0 1 54 28 Tm (HolyGATC / GATC46 1.1.0  educational manual) Tj
+1 0 0 1 518 28 Tm (5 / 9) Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Length 4899 >>
+stream
+BT
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 733.0 Tm (R  RET  0x12  \(--\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 719.0 Tm (Pop the call stack into the program counter. RET without a CALL is an error. Gene mode can) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 706.0 Tm (emit this: arginine codons CGT, CGC, CGA, CGG, AGA, AGG.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 687.0 Tm (H  HALT  0x08  \(--\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 673.0 Tm (Stop with exit code 0. In gene mode, TAA, TAG, and TGA become HALT and end translation.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 654.0 Tm (Q  QUIT  0x11  \(code --\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 640.0 Tm (Stop and use the popped value as the process status. Gene mode can emit it from glutamine,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 627.0 Tm (CAA or CAG.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 605.0 Tm (Input and output) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 585.0 Tm (Y  PUTN  0x19  \(n --\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 571.0 Tm (Write the top as a decimal numeral, with no added space or newline. Word alias: PRINT. Gene) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 558.0 Tm (letter Y is tyrosine, TAT or TAC.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 539.0 Tm (W  PUTC  0x17  \(n --\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 525.0 Tm (Write the low 8 bits of the top as one character. 10 is newline, 32 is space. Word alias:) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 512.0 Tm (EMIT. A quoted string is sugar for a run of LIT/PUTC pairs.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 493.0 Tm (I  IN  0x09  \(-- n\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 479.0 Tm (Read a line and push int\(line\). Empty input pushes -1. A line that is not an integer pushes) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 466.0 Tm (0. Gene letter I is isoleucine, ATT, ATC, or ATA.) Tj
+0.20 0.20 0.20 rg
+/F2 11 Tf
+1 0 0 1 54.0 447.0 Tm (?  GETC  0x1F  \(-- n\)) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 433.0 Tm (Read one character and push its code. End of file pushes -1. Symbol is a question mark, so) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 420.0 Tm (assembly-only.) Tj
+0.10 0.22 0.28 rg
+/F2 16 Tf
+1 0 0 1 54.0 396.0 Tm (4. Packed DNA files) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 375.0 Tm (compile --dna does not translate through the genetic code. It packs the bytecode so the file) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 362.0 Tm (looks like a tiny genome.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 346.0 Tm (The record is ATG, then a 16-bit big-endian length, then the payload, then TAA. ATG and TAA) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 333.0 Tm (here are framing, not a start codon and a halt opcode. The length counts payload bytes, not) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 320.0 Tm (bases. FASTA wraps at 60 characters and the header reads HolyGATC genome from <file>.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 304.0 Tm (Each payload byte becomes four bases, high bits first. A=00, C=01, G=10, T=11. So one byte) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 291.0 Tm (is always four letters, and the whole payload length in bases is four times the byte length,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 278.0 Tm (plus eight bases for the length word.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 262.0 Tm (NOP is 0x1B = 00011011 = ACGT. HALT is 0x08 = 00001000 = AAGA. ADD is 0x01 = 00000001 =) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 249.0 Tm (AAAC. A one-instruction NOP genome is:) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 233.0 Tm (ATG AAAAAAAC ACGT TAA) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 221.0 Tm (AAAAAAAC is the length word 0x0001. ACGT is the NOP. The runner strips a leading ATG and a) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 208.0 Tm (trailing TAA, rebuilds bytes from groups of four bases, reads the 16-bit length, and checks) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 195.0 Tm (that the payload is exactly that long.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 179.0 Tm (U in an input file is rewritten to T. Characters outside ACGT are dropped, so a FASTA header) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 166.0 Tm (does not become code. The payload length must be a multiple of four bases or decoding fails.) Tj
+0.10 0.22 0.28 rg
+/F2 16 Tf
+1 0 0 1 54.0 142.0 Tm (5. Codons and gene mode) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 121.0 Tm (Gene mode is the other DNA path. You pass --gene. The compiler finds ATG, skips that start) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 108.0 Tm (codon, and reads the rest in groups of three. Each codon is looked up in the standard) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 95.0 Tm (genetic code. The amino-acid letter is the opcode. A stop codon, written internally as *,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 82.0 Tm (becomes HALT and ends the program. If translation never sees a stop, a HALT is appended.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 66.0 Tm (The letter mapping used by this compiler:) Tj
+0.4 0.4 0.4 rg
+/F1 8 Tf
+1 0 0 1 54 28 Tm (HolyGATC / GATC46 1.1.0  educational manual) Tj
+1 0 0 1 518 28 Tm (6 / 9) Tj
+ET
+endstream
+endobj
+10 0 obj
+<< /Length 4932 >>
+stream
+BT
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 736.0 Tm (- A alanine, GCT/GCC/GCA/GCG: ADD) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 722.0 Tm (- C cysteine, TGT/TGC: CALL) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 708.0 Tm (- D aspartic acid, GAT/GAC: DUP) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 694.0 Tm (- E glutamic acid, GAA/GAG: EQ) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 680.0 Tm (- F phenylalanine, TTT/TTC: FETCH) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 666.0 Tm (- G glycine, GGT/GGC/GGA/GGG: GT) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 652.0 Tm (- H histidine, CAT/CAC: HALT) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 638.0 Tm (- I isoleucine, ATT/ATC/ATA: IN) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 624.0 Tm (- K lysine, AAA/AAG: LIT, and the next codon is a 0..63 immediate) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 610.0 Tm (- L leucine, TTA/TTG/CTT/CTC/CTA/CTG: LT) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 596.0 Tm (- M methionine, ATG: MUL. The first ATG is skipped as start.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 582.0 Tm (- N asparagine, AAT/AAC: NOT) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 568.0 Tm (- P proline, CCT/CCC/CCA/CCG: AND) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 554.0 Tm (- Q glutamine, CAA/CAG: QUIT) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 540.0 Tm (- R arginine, CGT/CGC/CGA/CGG/AGA/AGG: RET) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 526.0 Tm (- S serine, TCT/TCC/TCA/TCG/AGT/AGC: SUB) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 512.0 Tm (- T threonine, ACT/ACC/ACA/ACG: STORE) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 498.0 Tm (- V valine, GTT/GTC/GTA/GTG: DIV) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 484.0 Tm (- W tryptophan, TGG: PUTC) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 470.0 Tm (- Y tyrosine, TAT/TAC: PUTN) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 456.0 Tm (Synthetic opcodes have no codon: B JMP, J JZ, O OR, U OVER, X XOR, Z SWAP, and every symbol) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 443.0 Tm (opcode \(_, %, ~, !, ?, <, >, $, +, -, *, @, &, =, /, ^, |, ;, ., ,\). Gene mode cannot) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 430.0 Tm (express those.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 414.0 Tm (The classic gene that prints 42:) Tj
+0.12 0.18 0.28 rg
+/F3 9 Tf
+1 0 0 1 64.0 398.0 Tm (ATG AAA GGA AAA AAG GCT TAT TAA) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 386.0 Tm (Skipped start. AAA is LIT, GGA is 40. AAA is LIT, AAG is 2. GCT is alanine, ADD. TAT is) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 373.0 Tm (tyrosine, PUTN. TAA is stop. 40+2 is printed as 42.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 357.0 Tm (translate prints the amino-acid string rather than executing. For that gene it is MKAKAY*,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 344.0 Tm (with the start methionine included in the letter dump. Execution skips that first M.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 328.0 Tm (Codon immediates are not ASCII and not bytecode. They are six bits: each base contributes) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 315.0 Tm (two bits, high base first. AAA is 0. TTT is 63. You cannot push 100 in gene mode with one) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 302.0 Tm (LIT. Packed DNA can, because LIT's immediate there is a full 32-bit word.) Tj
+0.10 0.22 0.28 rg
+/F2 16 Tf
+1 0 0 1 54.0 278.0 Tm (6. How GATC46.py is built) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 257.0 Tm (The file is about 874 lines and has no library dependencies beyond the Python standard) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 244.0 Tm (library. Reading it is a tour of a small language implementation: tables, lexer, assembler,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 231.0 Tm (encoder, decoder, and a loop that executes one instruction.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 209.0 Tm (Tables) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 192.0 Tm (OPDEF is the source of truth. Each row is symbol, name, byte, whether an immediate follows,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 179.0 Tm (and a stack description. From that list the program builds LETTER_TO_OP, NAME_TO_BYTE,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 166.0 Tm (BYTE_TO_NAME, BYTE_HAS_IMM, and LETTER_HAS_IMM. ALIASES maps words such as PRINT and EMIT) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 153.0 Tm (onto those names. GENETIC_CODE is the NCBI-style codon table, with stop codons mapped to *.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 140.0 Tm (BITS_OF_BASE and BASE_OF_BITS are the 2-bit packing. Limits are MEM_SIZE 4096, STACK_LIMIT) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 127.0 Tm (65536, CALL_LIMIT 4096, and STEP_LIMIT_DEFAULT 1000000.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 105.0 Tm (Errors and records) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 88.0 Tm (GATCError is the single exception type. main catches it and prints error: ... to stderr.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 75.0 Tm (Token holds kind, value, line, and column. Instr holds the opcode name, an optional) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 62.0 Tm (immediate, an optional unresolved label, and a source line. Using two small records keeps) Tj
+0.4 0.4 0.4 rg
+/F1 8 Tf
+1 0 0 1 54 28 Tm (HolyGATC / GATC46 1.1.0  educational manual) Tj
+1 0 0 1 518 28 Tm (7 / 9) Tj
+ET
+endstream
+endobj
+11 0 obj
+<< /Length 5710 >>
+stream
+BT
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 736.0 Tm (the assembler from passing raw tuples around.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 714.0 Tm (Lexer: tokenize_aa) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 697.0 Tm (A hand-written scanner, not a regular expression. It walks the string with an index. Spaces) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 684.0 Tm (and tabs are skipped. Newlines bump the line counter. # skips to the newline. A quote starts) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 671.0 Tm (a string, with the five escapes, and rejects a raw newline inside the quotes. A colon starts) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 658.0 Tm (a label, which is forced to uppercase. A digit, or a minus followed by a digit, starts a) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 645.0 Tm (number; 0x switches to hex. A single character that is an opcode and is not followed by a) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 632.0 Tm (letter is an opcode token. A longer word is an alias if it is in ALIASES, otherwise an) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 619.0 Tm (identifier, which later means a label address. Anything else is an error with line and) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 606.0 Tm (column.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 584.0 Tm (Assembler: assemble_tokens and resolve) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 567.0 Tm (Two passes, in the classic way. Pass one walks tokens. A label records the current) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 554.0 Tm (instruction count and emits nothing. A string emits LIT plus PUTC per character, which is) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 541.0 Tm (why disassembly of a short string is long. A number emits LIT. An identifier emits LIT with) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 528.0 Tm (the label still unresolved. An opcode emits one Instr, and if it has an immediate the next) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 515.0 Tm (token must be a number or an identifier. Pass two, resolve, replaces each label name with) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 502.0 Tm (the instruction index stored in the label table. A missing label is an error. Duplicate) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 489.0 Tm (labels are an error in pass one.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 467.0 Tm (Bytecode: encode_bytecode and decode_bytecode) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 450.0 Tm (Encoding writes the opcode byte. If that byte has an immediate, it writes the integer as) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 437.0 Tm (four little-endian bytes, masked to 32 bits. Decoding reverses that. This is why disassembly) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 424.0 Tm (addresses and bytecode offsets differ: a LIT occupies five bytes and one instruction slot.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 411.0 Tm (The runner also accepts a .gbc whose first four bytes are the ASCII magic GATC.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 389.0 Tm (DNA codec) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 372.0 Tm (strip_to_bases uppercases, turns U into T, and keeps only ACGT. bytecode_to_dna builds a) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 359.0 Tm (packet of a 2-byte big-endian length plus the bytecode, expands each byte to four bases, and) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 346.0 Tm (wraps ATG and TAA. dna_to_bytecode strips framing, requires a multiple of four bases,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 333.0 Tm (rebuilds bytes, checks the length, and returns the payload. codon_value packs three bases) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 320.0 Tm (into a 0..63 integer for gene-mode literals. compile_gene is the ribosome loop described in) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 307.0 Tm (section 5. compile_source guesses the input: a DNA suffix, or a string that is only bases) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 294.0 Tm (and starts with ATG and is long enough, goes through the DNA decoder. Otherwise it tokenizes) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 281.0 Tm (and assembles.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 259.0 Tm (FASTA, translate, disasm) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 242.0 Tm (write_fasta emits a > header and wraps at 60. translate_coding_sequence is the letter dump) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 229.0 Tm (used by the translate command. disasm prints each instruction as index, name, and immediate) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 216.0 Tm (if present. It does not try to recover string quotes. A printed word is a run of LIT/PUTC) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 203.0 Tm (pairs.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 181.0 Tm (The virtual machine) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 164.0 Tm (VM.__init__ holds the program, a program counter, a data stack, a call stack, a 4096-cell) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 151.0 Tm (memory list, stdin, stdout, a halted flag, an exit code, and a step count. push and pop) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 138.0 Tm (enforce the stack limit and underflow. run is the fetch loop: check the step budget, check) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 125.0 Tm (that the program counter is in range, fetch the Instr, count the step, call _exec. _exec is) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 112.0 Tm (a long chain of opcode names. Arithmetic pops b then a so the deeper value stays the left) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 99.0 Tm (operand. Jumps assign the program counter instead of incrementing it. CALL saves pc+1. RET) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 86.0 Tm (restores it. IN uses readline and int\(\). GETC uses read\(1\). PUTN and PUTC write and flush.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 73.0 Tm (HALT and QUIT set halted. An unknown name is an error, which should be unreachable if the) Tj
+0.4 0.4 0.4 rg
+/F1 8 Tf
+1 0 0 1 54 28 Tm (HolyGATC / GATC46 1.1.0  educational manual) Tj
+1 0 0 1 518 28 Tm (8 / 9) Tj
+ET
+endstream
+endobj
+12 0 obj
+<< /Length 3593 >>
+stream
+BT
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 736.0 Tm (assembler is the only producer.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 714.0 Tm (The command line) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 697.0 Tm (main builds an argparse parser. The command is optional and defaults to help, chosen from) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 684.0 Tm (run, compile, disasm, translate, opcodes, help, and version. Flags are -o, --dna,) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 671.0 Tm (--max-steps, --no-banner, and --gene. parse_intermixed_args lets flags sit among positional) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 658.0 Tm (arguments. help and version return before opening a file. opcodes prints OPDEF. Every file) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 645.0 Tm (command reads the source as text, then branches. compile always encodes bytecode and, with) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 632.0 Tm (--dna, wraps it in FASTA. disasm either gene-compiles, decodes a .gbc, or assembles. run) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 619.0 Tm (does the same selection and then VM.run. GATCError becomes a nonzero exit.) Tj
+0.10 0.22 0.28 rg
+/F2 16 Tf
+1 0 0 1 54.0 595.0 Tm (7. Pitfalls and exercises) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 574.0 Tm (- The command name is required. compile, run, and disasm come before the filename.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 560.0 Tm (- JZ jumps when the flag is 0, not when it is 1. The address is on top of the flag.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 546.0 Tm (- Subroutines placed before main will run as the program falls into them.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 532.0 Tm (- Strings expand. A label after a string is not at the source-line count.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 518.0 Tm (- Gene mode immediates only reach 63, and cannot encode JMP, JZ, SWAP, or the symbol) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 505.0 Tm (  opcodes.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 491.0 Tm (- IN on a blank or non-numeric line pushes 0, which is indistinguishable from the user) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 478.0 Tm (  typing 0. End of file is -1.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 464.0 Tm (- PUTN does not print a newline. Emit 10 yourself with K 10 W.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 450.0 Tm (- Memory is 4096 cells. The data stack and the call stack are separate.) Tj
+0.15 0.32 0.28 rg
+/F2 13 Tf
+1 0 0 1 54.0 430.0 Tm (Exercises) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 413.0 Tm (- Print the numbers 1 through 5 with a counted loop. You need a label, DUP, a) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 400.0 Tm (  comparison, JZ or JNZ, and INC.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 386.0 Tm (- Write DOUBLE and SQUARE as subroutines and call both on one input.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 372.0 Tm (- Store the input at address 0, then fetch it twice, so you do not need the swap dance.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 358.0 Tm (- Compile the same program both --dna and as assembly, disassemble both, and confirm the) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 345.0 Tm (  instruction list matches.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 62.0 331.0 Tm (- Hand-encode HALT as packed DNA and run the FASTA file.) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 317.0 Tm (Source of the implementation: GATC46.py in github.com/23x41/DNAcompiler, version 1.1.0. The) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 304.0 Tm (genetic-code table follows the standard codon table. The opcode letters are a project) Tj
+0 0 0 rg
+/F1 10 Tf
+1 0 0 1 54.0 291.0 Tm (convention, not a biological claim.) Tj
+0.4 0.4 0.4 rg
+/F1 8 Tf
+1 0 0 1 54 28 Tm (HolyGATC / GATC46 1.1.0  educational manual) Tj
+1 0 0 1 518 28 Tm (9 / 9) Tj
+ET
+endstream
+endobj
+13 0 obj
+<< /Type /Page /Parent 22 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> >>
+endobj
+14 0 obj
+<< /Type /Page /Parent 22 0 R /MediaBox [0 0 612 792] /Contents 5 0 R /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> >>
+endobj
+15 0 obj
+<< /Type /Page /Parent 22 0 R /MediaBox [0 0 612 792] /Contents 6 0 R /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> >>
+endobj
+16 0 obj
+<< /Type /Page /Parent 22 0 R /MediaBox [0 0 612 792] /Contents 7 0 R /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> >>
+endobj
+17 0 obj
+<< /Type /Page /Parent 22 0 R /MediaBox [0 0 612 792] /Contents 8 0 R /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> >>
+endobj
+18 0 obj
+<< /Type /Page /Parent 22 0 R /MediaBox [0 0 612 792] /Contents 9 0 R /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> >>
+endobj
+19 0 obj
+<< /Type /Page /Parent 22 0 R /MediaBox [0 0 612 792] /Contents 10 0 R /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> >>
+endobj
+20 0 obj
+<< /Type /Page /Parent 22 0 R /MediaBox [0 0 612 792] /Contents 11 0 R /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> >>
+endobj
+21 0 obj
+<< /Type /Page /Parent 22 0 R /MediaBox [0 0 612 792] /Contents 12 0 R /Resources << /Font << /F1 1 0 R /F2 2 0 R /F3 3 0 R >> >> >>
+endobj
+22 0 obj
+<< /Type /Pages /Count 9 /Kids [13 0 R 14 0 R 15 0 R 16 0 R 17 0 R 18 0 R 19 0 R 20 0 R 21 0 R] >>
+endobj
+23 0 obj
+<< /Type /Catalog /Pages 22 0 R >>
+endobj
+xref
+0 24
+0000000000 65535 f 
+0000000009 00000 n 
+0000000079 00000 n 
+0000000154 00000 n 
+0000000222 00000 n 
+0000005206 00000 n 
+0000009787 00000 n 
+0000014445 00000 n 
+0000018387 00000 n 
+0000022901 00000 n 
+0000027852 00000 n 
+0000032837 00000 n 
+0000038600 00000 n 
+0000042246 00000 n 
+0000042394 00000 n 
+0000042542 00000 n 
+0000042690 00000 n 
+0000042838 00000 n 
+0000042986 00000 n 
+0000043134 00000 n 
+0000043283 00000 n 
+0000043432 00000 n 
+0000043581 00000 n 
+0000043696 00000 n 
+trailer << /Size 24 /Root 23 0 R >>
+startxref
+43747
+%%EOF
