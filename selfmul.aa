@@ -1,0 +1,17 @@
+# selfmul.aa — read one integer, print n*n and n+n
+"digit? "
+I          # (-- n)
+D          # (n -- n n)
+D          # (n n -- n n n)
+M          # (n n n -- n n*n)
+Z          # (n n*n -- n*n n)
+D          # (n*n n -- n*n n n)
+A          # (n*n n n -- n*n n+n)
+Z          # (n*n n+n -- n+n n*n)
+" n*n="
+Y
+" n+n="
+Y
+K 10
+W
+H
