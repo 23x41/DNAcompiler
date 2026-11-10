@@ -1,0 +1,141 @@
+"=== HolyGATC64 Opcode Showcase ===" CR "Enter 1-64 for opcode info and example" CR "0 to list all opcodes" CR "-1 to quit" CR
+
+:LOOP "Choice " I D -1 E EXITL * D 0 E LISTALL * D 1 E SHOW1 * D 2 E SHOW2 * D 3 E SHOW3 * D 4 E SHOW4 * D 5 E SHOW5 * D 6 E SHOW6 * D 7 E SHOW7 * D 8 E SHOW8 * D 9 E SHOW9 * D 10 E SHOW10 * D 11 E SHOW11 * D 12 E SHOW12 * D 13 E SHOW13 * D 14 E SHOW14 * D 15 E SHOW15 * D 16 E SHOW16 * D 17 E SHOW17 * D 18 E SHOW18 * D 19 E SHOW19 * D 20 E SHOW20 * D 21 E SHOW21 * D 22 E SHOW22 * D 23 E SHOW23 * D 24 E SHOW24 * D 25 E SHOW25 * D 26 E SHOW26 * D 27 E SHOW27 * D 28 E SHOW28 * D 29 E SHOW29 * D 30 E SHOW30 * D 31 E SHOW31 * D 32 E SHOW32 * D 33 E SHOW33 * D 34 E SHOW34 * D 35 E SHOW35 * D 36 E SHOW36 * D 37 E SHOW37 * D 38 E SHOW38 * D 39 E SHOW39 * D 40 E SHOW40 * D 41 E SHOW41 * D 42 E SHOW42 * D 43 E SHOW43 * D 44 E SHOW44 * D 45 E SHOW45 * D 46 E SHOW46 * D 47 E SHOW47 * D 48 E SHOW48 * D 49 E SHOW49 * D 50 E SHOW50 * D 51 E SHOW51 * D 52 E SHOW52 * D 53 E SHOW53 * D 54 E SHOW54 * D 55 E SHOW55 * D 56 E SHOW56 * D 57 E SHOW57 * D 58 E SHOW58 * D 59 E SHOW59 * D 60 E SHOW60 * D 61 E SHOW61 * D 62 E SHOW62 * D 63 E SHOW63 * D 64 E SHOW64 * "Invalid choice" CR LOOP B
+
+:EXITL "Goodbye" CR H
+
+:LISTALL "1 A ADD" CR "2 B JMP" CR "3 C CALL" CR "4 D DUP" CR "5 E EQ" CR "6 F FETCH" CR "7 G GT" CR "8 H HALT" CR "9 I IN" CR "10 J JZ" CR "11 K LIT" CR "12 L LT" CR "13 M MUL" CR "14 N NOT" CR "15 O OR" CR "16 P AND" CR "17 Q QUIT" CR "18 R RET" CR "19 S SUB" CR "20 T STORE" CR "21 U OVER" CR "22 V DIV" CR "23 W PUTC" CR "24 X XOR" CR "25 Y PUTN" CR "26 Z SWAP" CR "27 _ NOP" CR "28 % MOD" CR "29 ~ NEG" CR "30 ! DROP" CR "31 ? GETC" CR "32 < SHL" CR "33 > SHR" CR "34 $ RAND" CR "35 + INC" CR "36 - DEC" CR "37 * JNZ" CR "38 @ ROT" CR "39 & NIP" CR "40 = NE" CR "41 / GE" CR "42 ^ LE" CR "43 | MAX" CR "44 ; MIN" CR "45 . ABS" CR "46 , DEPTH" CR "47 ` TUCK" CR "48 ' PICK" CR "49 [ DDUP" CR "50 ] DDROP" CR "51 { TOR" CR "52 } RFROM" CR "53 \ INV" CR "54 ( ZERO" CR "55 ) ONE" CR "56 CR CR" CR "57 TSWP" CR "58 BOOL" CR "59 PSTO" CR "60 UNDER" CR "61 RDROP" CR "62 NROLL" CR "63 SIGN" CR "64 MADD" CR LOOP B
+
+:SHOW1 "1 A ADD (a b -- a+b)" CR "15+27=" 15 27 A Y CR LOOP B
+
+:SHOW2 "2 B JMP (addr --)" CR DEMOJMP B :DEMOJMP "jumped" CR LOOP B
+
+:SHOW3 "3 C CALL (addr --)" CR 10 ADDFIVE C Y CR LOOP B :ADDFIVE 5 A R
+
+:SHOW4 "4 D DUP (a -- a a)" CR "42 DUP ADD=" 42 D A Y CR LOOP B
+
+:SHOW5 "5 E EQ (a b -- flag)" CR "7==7?" 7 7 E Y CR LOOP B
+
+:SHOW6 "6 F FETCH (addr -- val)" CR 99 0 T 0 F Y CR LOOP B
+
+:SHOW7 "7 G GT (a b -- flag)" CR "10>3?" 10 3 G Y CR LOOP B
+
+:SHOW8 "8 H HALT (--)" CR "would halt skipped" CR LOOP B
+
+:SHOW9 "9 I IN (-- n)" CR "enter number " I "got " Y CR LOOP B
+
+:SHOW10 "10 J JZ (flag addr --)" CR 0 DEMOJZ J "not taken" CR LOOP B :DEMOJZ "jumped zero" CR LOOP B
+
+:SHOW11 "11 K LIT (-- n)" CR "100=" 100 Y CR LOOP B
+
+:SHOW12 "12 L LT (a b -- flag)" CR "3<10?" 3 10 L Y CR LOOP B
+
+:SHOW13 "13 M MUL (a b -- a*b)" CR "6*7=" 6 7 M Y CR LOOP B
+
+:SHOW14 "14 N NOT (a -- flag)" CR "NOT0=" 0 N Y CR LOOP B
+
+:SHOW15 "15 O OR (a b -- a|b)" CR "5OR3=" 5 3 O Y CR LOOP B
+
+:SHOW16 "16 P AND (a b -- a&b)" CR "5AND3=" 5 3 P Y CR LOOP B
+
+:SHOW17 "17 Q QUIT (code --)" CR "would quit skipped" CR LOOP B
+
+:SHOW18 "18 R RET (--)" CR "used with CALL" CR LOOP B
+
+:SHOW19 "19 S SUB (a b -- a-b)" CR "50-8=" 50 8 S Y CR LOOP B
+
+:SHOW20 "20 T STORE (val addr --)" CR 42 1 T 1 F Y CR LOOP B
+
+:SHOW21 "21 U OVER (a b -- a b a)" CR "3 5 OVER ADD=" 3 5 U A Y CR LOOP B
+
+:SHOW22 "22 V DIV (a b -- a/b)" CR "20/3=" 20 3 V Y CR LOOP B
+
+:SHOW23 "23 W PUTC (n --)" CR "A=" 65 W CR LOOP B
+
+:SHOW24 "24 X XOR (a b -- a^b)" CR "5XOR3=" 5 3 X Y CR LOOP B
+
+:SHOW25 "25 Y PUTN (n --)" CR "123=" 123 Y CR LOOP B
+
+:SHOW26 "26 Z SWAP (a b -- b a)" CR "1 2 SWAP SUB=" 1 2 Z S Y CR LOOP B
+
+:SHOW27 "27 _ NOP (--)" CR "7NOP=" 7 _ Y CR LOOP B
+
+:SHOW28 "28 % MOD (a b -- a%b)" CR "17%5=" 17 5 % Y CR LOOP B
+
+:SHOW29 "29 ~ NEG (a -- -a)" CR "NEG42=" 42 ~ Y CR LOOP B
+
+:SHOW30 "30 ! DROP (a --)" CR "1 2 DROP=" 1 2 ! Y CR LOOP B
+
+:SHOW31 "31 ? GETC (-- n)" CR "type char " ? "code " Y CR LOOP B
+
+:SHOW32 "32 < SHL (a b -- a<<b)" CR "1<<4=" 1 4 < Y CR LOOP B
+
+:SHOW33 "33 > SHR (a b -- a>>b)" CR "32>>2=" 32 2
+
+Y CR LOOP B
+
+:SHOW34 "34 $ RAND (n -- r)" CR "rand99=" 100 $ Y CR LOOP B
+
+:SHOW35 "35 + INC (a -- a+1)" CR "INC41=" 41 + Y CR LOOP B
+:SHOW36 "36 - DEC (a -- a-1)" CR "DEC43=" 43
+
+Y CR LOOP B
+
+:SHOW37 "37 * JNZ (flag addr --)" CR 1 DEMOJNZ * "not taken" CR LOOP B :DEMOJNZ "jumped nonzero" CR LOOP B
+
+:SHOW38 "38 @ ROT (a b c -- b c a)" CR "1 2 3 ROT=" 1 2 3 @ Y CR LOOP B
+
+:SHOW39 "39 & NIP (a b -- b)" CR "10 20 NIP=" 10 20 & Y CR LOOP B
+:SHOW40 "40 = NE (a b -- flag)" CR "5!=7?" 5 7
+
+Y CR LOOP B
+
+:SHOW41 "41 / GE (a b -- flag)" CR "10>=10?" 10 10 / Y CR LOOP B
+
+:SHOW42 "42 ^ LE (a b -- flag)" CR "4<=5?" 4 5 ^ Y CR LOOP B
+
+:SHOW43 "43 | MAX (a b -- max)" CR "max8 15=" 8 15 | Y CR LOOP B
+
+:SHOW44 "44 ; MIN (a b -- min)" CR "min8 15=" 8 15 ; Y CR LOOP B
+
+:SHOW45 "45 . ABS (a -- |a|)" CR "ABS-17=" -17 . Y CR LOOP B
+
+:SHOW46 "46 , DEPTH (-- n)" CR "depth=" 1 2 , Y CR LOOP B
+
+:SHOW47 "47 TUCK (a b -- b a b)" CR "3 4 TUCK ADD=" 3 4 A Y CR LOOP B
+
+:SHOW48 "48 ' PICK (n -- x)" CR "10 20 30 2PICK=" 10 20 30 2 ' Y CR LOOP B
+
+:SHOW49 "49 [ DDUP (a b -- a b a b)" CR "5 6 DDUP ADDADD=" 5 6 [ A A Y CR LOOP B
+
+:SHOW50 "50 ] DDROP (a b --)" CR "1 2 3 4 DDROP=" 1 2 3 4 ] Y CR LOOP B
+
+:SHOW51 "51 { TOR (a --)" CR 99 { } Y CR LOOP B
+
+:SHOW52 "52 } RFROM (-- a)" CR "paired with TOR" CR LOOP B
+
+:SHOW53 "53 \ INV (a -- ~a)" CR "INV0=" 0 INV Y CR LOOP B
+
+:SHOW54 "54 ( ZERO (-- 0)" CR "ZERO=" ZERO Y CR LOOP B
+
+:SHOW55 "55 ) ONE (-- 1)" CR "ONE=" ONE Y CR LOOP B
+
+:SHOW56 "56 CR CR (--) newline" CR "line" CR LOOP B
+
+:SHOW57 "57 TSWP (a b c d -- c d a b)" CR "1 2 3 4 TSWP=" 1 2 3 4 TSWP Y CR LOOP B
+
+:SHOW58 "58 BOOL (a -- 0|1)" CR "BOOL42=" 42 BOOL Y CR LOOP B
+
+:SHOW59 "59 PSTO (addr --) mem++" CR 10 2 T 2 PSTO 2 F Y CR LOOP B
+
+:SHOW60 "60 UNDER (a b -- a a b)" CR "7 8 UNDER ADD=" 7 8 UNDER A Y CR LOOP B
+
+:SHOW61 "61 RDROP (R: a --)" CR "rstack op skipped" CR LOOP B
+
+:SHOW62 "62 NROLL (a b c -- c a b)" CR "1 2 3 NROLL=" 1 2 3 NROLL Y CR LOOP B
+
+:SHOW63 "63 SIGN (a -- -1|0|1)" CR "SIGN-5=" -5 SIGN Y CR LOOP B
+
+:SHOW64 "64 MADD (n addr --)" CR 20 3 T 7 3 MADD 3 F Y CR LOOP B
+
+LOOP B H
