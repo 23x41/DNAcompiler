@@ -1,3 +1,6 @@
+
+python3 GATCnux.py run shell.aa --no-banner --fs --max-steps 2000000000
+
 python3 GATC46.py compile newops.aa --dna -o program.dna
 
 1. Amino-acid assembly (.aa)
