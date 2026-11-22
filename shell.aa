@@ -1,0 +1,2214 @@
+# =====================================================================
+# sak.aa  --  GATC SAK: a swiss army knife shell for the GATC VM
+#
+#   python3 GATCloader.py run sak.aa --no-banner --fs --max-steps 2000000000
+#   python3 GATCloader.py run sak.aa --no-banner --fs-root ~/sandbox --max-steps 2000000000
+#   echo "ls -l" | python3 GATCloader.py run sak.aa --no-banner --fs
+#
+# Commands:  ls ll cd pwd cat touch cp mv rm mkdir rmdir ln stat chmod echo
+#            head tail wc grep xxd find tree du df crc32 realpath date whoami
+#            clear help exit
+# Shell:     "quotes" 'quotes' and \escapes, wildcards * and ? in the last part
+#            of a path, output redirection with > file and >> file.
+#
+# The VM has no file-system opcodes, so GATCloader.py --fs provides small
+# syscall-like steps through control cells 4128..4138 (stat, opendir, open,
+# read, write, unlink, rename ...).  Everything else - parsing, globbing, the
+# recursive directory walker, ls columns, dates, grep, wc, tail, xxd, crc32 -
+# is done here in GATC assembly.
+#
+# Generated from sak.tpl by gen_sak.py (addresses are assigned automatically).
+# No negative literals are used (bytecode/DNA decoding reads immediates unsigned).
+# Memory map (generated):
+#       0..  255  LINE
+#     256..  543  ARGBUF
+#     544..  575  ARGV
+#     576..  607  OPND
+#     608.. 1207  PA
+#    1208.. 1807  PB
+#    1808.. 2319  BLK
+#    2320.. 2575  NAME
+#    2576.. 2831  LBUF
+#    2832.. 2959  PAT
+#    2960.. 3055  GPAT
+#    3056.. 3119  EBUF
+#    3120.. 3469  FRAMES
+#    3470.. 3687  variables (218)
+#    3688.. 3929  strings (48)   free: 166 cells
+# =====================================================================
+
+
+
+
+MAIN B
+
+# =====================================================================
+#  host bridge
+# =====================================================================
+
+:SYS                       # (cmd -- status)
+  4128 T 4133 F R
+:ERRB                      # following output goes to stderr
+  1 4129 T 25 SYS C ! R
+:ERRE                      # back to stdout (or the redirect file)
+  0 4129 T 25 SYS C ! R
+:STATP                     # (path follow -- ok)  sets $ssize $stype $smode $smtime
+  4130 T 4129 T 1 SYS C D STPF J
+  4134 F 3470 T 4135 F 3471 T 4136 F 3472 T 4137 F 3473 T
+:STPF
+  R
+:FOPEN                     # (path mode -- ok)  handle in %FR1
+  4130 T 4129 T 9 SYS C R
+:FCLOSE                    # (fd --)
+  4129 T 12 SYS C ! R
+:BREAD                     # (fd -- n)  read up to 512 bytes into BLK, 0 at EOF or error
+  4129 T 1808 4130 T 512 4131 T 10 SYS C BRFAIL J
+  4134 F R
+:BRFAIL
+  0 R
+:FSEEK                     # (fd offset --)  absolute position
+  4130 T 4129 T 0 4131 T 0 4132 T 13 SYS C ! R
+:SAMEF                     # (a b -- same)  %FR2 = b is inside a
+  4130 T 4129 T 24 SYS C ! 4134 F R
+:TTYCHK
+  21 SYS C ! 4134 F 3474 T 4135 F 3475 T 4136 F 3476 T R
+:TIMEINIT
+  18 SYS C ! 4134 F 3477 T 4135 F 3478 T R
+
+# =====================================================================
+#  strings
+# =====================================================================
+
+:STRLEN                    # (a -- n)
+  D
+:SLLP
+  D F SLEND J
+  + SLLP B
+:SLEND
+  SWAP S R
+
+:STREQ                     # (a b -- flag)
+  3479 T 3480 T
+:SQLP
+  3479 F F 3480 F F = SQNO *
+  3479 F F SQYES J
+  3479 PSTO 3480 PSTO SQLP B
+:SQNO
+  0 R
+:SQYES
+  1 R
+
+:STRNCPY                   # (src dst max --)  copy at most max-1 bytes; $ctr = 1 if cut
+  - 3481 T 3482 T 3483 T 0 3484 T
+:SNLP
+  3483 F F D SNEND J
+  3481 F SNFULL J
+  3482 F T
+  3483 PSTO 3482 PSTO 3481 F - 3481 T
+  SNLP B
+:SNFULL
+  1 3484 T
+:SNEND
+  ! 0 3482 F T R
+
+:APPENDS                   # (src dst max -- ok)  append src to the string at dst
+  3485 T 3486 T 3487 T
+  3486 F STRLEN C 3488 T
+  3487 F 3486 F 3488 F A 3485 F 3488 F S STRNCPY C
+  3484 F N R
+
+:PATHJOIN                  # (src buf -- ok)  buf = buf "/" src  (no doubled slash)
+  3489 T 3490 T
+  3489 F STRLEN C D PJNOSL J
+  - 3489 F A F 47 E PJCAT *
+  3850 3489 F 600 APPENDS C PJFAIL J
+  PJCAT B
+:PJNOSL
+  !
+:PJCAT
+  3490 F 3489 F 600 APPENDS C R
+:PJFAIL
+  0 R
+
+:ADDNAME                   # (buf -- ok)  buf = buf "/" NAME
+  2320 SWAP PATHJOIN C R
+
+:BASENAME                  # (p -- q)  q = text after the last '/'
+  D 3491 T
+:BNLP
+  D F BNEND J
+  D F 47 E BNSL *
+  + BNLP B
+:BNSL
+  + D 3491 T BNLP B
+:BNEND
+  ! 3491 F R
+
+:HASWILD                   # (p -- flag)  contains * or ?
+:HWLP
+  D F D HWNO J
+  D 42 E SWAP 63 E O HWYES *
+  + HWLP B
+:HWNO
+  ] 0 R
+:HWYES
+  ! 1 R
+
+:STRIPSL                   # (buf --)  drop trailing slashes, keep a lone "/"
+  3492 T
+:SSLP
+  3492 F STRLEN C D 2 L SSDONE *
+  - 3492 F A D F 47 = SSDONE *
+  0 SWAP T SSLP B
+:SSDONE
+  ! R
+
+:LOWER                     # (c -- c')
+  D 65 L LWX *
+  D 90 G LWX *
+  32 O
+:LWX
+  R
+
+:LOWERBUF                  # (buf --)
+:LBLP
+  D F LBEND J
+  D F LOWER C OVER T + LBLP B
+:LBEND
+  ! R
+
+:PARSENUM                  # (p -- n)  decimal; $nbad = 1 if empty or trailing junk
+  3493 T 0 3494 T 0 3495 T
+:PNLP
+  3493 F F D 48 L OVER 57 G O PNEND *
+  48 S 3494 F 10 M A 3494 T 3493 PSTO 3495 PSTO PNLP B
+:PNEND
+  3495 F N SWAP BOOL O 3496 T 3494 F R
+
+:WMATCH                    # (pat str -- flag)  wildcard match: * any run, ? one byte
+  3497 T 3498 T
+  0 3499 T 0 3500 T 0 3501 T 0 3502 T
+:WMLP
+  3500 F 3497 F A F WMTAIL J
+  3499 F 3498 F A F 3503 T
+  3503 F 63 E WMADV *
+  3503 F 42 E WMSTAR *
+  3503 F 3500 F 3497 F A F E WMADV *
+  3501 F WMNO J
+  3501 F 3499 T 3502 PSTO 3502 F 3500 T WMLP B
+:WMADV
+  3499 PSTO 3500 PSTO WMLP B
+:WMSTAR
+  3499 F + D 3501 T 3499 T 3500 F 3502 T WMLP B
+:WMTAIL
+  3499 F 3498 F A F 42 = WMEND *
+  3499 PSTO WMTAIL B
+:WMEND
+  3499 F 3498 F A F N R
+:WMNO
+  0 R
+
+# =====================================================================
+#  output
+# =====================================================================
+
+:WRITEN                    # (a n --)  raw bytes to stdout (UTF-8 safe, byte exact)
+  D WNZ J
+  4131 T 4130 T 1 4129 T 11 SYS C ! R
+:WNZ
+  ] R
+:PUTS                      # (a --)
+  D STRLEN C WRITEN C R
+
+:SPACES                    # (k --)
+  D 1 L SPEND *
+  32 W - SPACES B
+:SPEND
+  ! R
+
+:NUMW                      # (n -- digits)
+  1 SWAP
+:NWLP
+  D 10 L NWEND *
+  10 V SWAP + SWAP NWLP B
+:NWEND
+  ! R
+
+:PADNUM                    # (n width --)  right aligned
+  OVER NUMW C S SPACES C Y R
+
+:PAD2                      # (n --)  two digits
+  D 10 L P2Z *
+  Y R
+:P2Z
+  48 W Y R
+
+:HEXN                      # (n digits --)
+  3504 T 3505 T
+:HXLP
+  3504 F HXEND J
+  3504 F - D 3504 T 4 M 3505 F SWAP > 15 P
+  D 10 L HXNUM *
+  87 A W HXLP B
+:HXNUM
+  48 A W HXLP B
+:HXEND
+  R
+
+:OCT4                      # (n --)  4 octal digits
+  D 9 > 7 P Y D 6 > 7 P Y D 3 > 7 P Y 7 P Y R
+
+:HUMAN                     # (n width --)  1023, 4.0K, 12M ... right aligned
+  3506 T 3507 T
+  3507 F 1024 L HUPLAIN *
+  0 3508 T 1024 3509 T
+:HULP
+  3507 F 3509 F 1024 M L HUGO *
+  3508 F 4 / HUGO *
+  3509 F 1024 M 3509 T 3508 PSTO HULP B
+:HUGO                      # rounds up, like GNU ls/du/df -h
+  3507 F 10 M 3509 F A - 3509 F V 3510 T
+  3510 F 100 L HUDEC *
+  3507 F 3509 F A - 3509 F V
+  D 1024 L HUINT *
+  ! 10 3510 T 3509 F 1024 M 3509 T 3508 PSTO HUDEC B
+:HUINT
+  D NUMW C + 3506 F SWAP S SPACES C Y HUUNIT C R
+:HUDEC
+  3510 F 10 V NUMW C 3 A 3506 F SWAP S SPACES C
+  3510 F 10 V Y 46 W 3510 F 10 MOD Y HUUNIT C R
+:HUPLAIN
+  3507 F 3506 F PADNUM C R
+:HUUNIT
+  3508 F
+  D HUK J
+  D 1 E HUM *
+  D 2 E HUG *
+  D 3 E HUT *
+  ! 80 W R
+:HUK
+  ! 75 W R
+:HUM
+  ! 77 W R
+:HUG
+  ! 71 W R
+:HUT
+  ! 84 W R
+
+:PERMS                     # (mode --)  rwxr-xr-x
+  3511 T 8 3512 T
+:PMLP
+  3511 F 3512 F > 1 P
+  3512 F 3 MOD
+  SWAP PMDASH J
+  D 2 E PMR *
+  D 1 E PMW *
+  ! 120 W PMNX B
+:PMR
+  ! 114 W PMNX B
+:PMW
+  ! 119 W PMNX B
+:PMDASH
+  ! 45 W
+:PMNX
+  3512 F PMEND J
+  3512 F - 3512 T PMLP B
+:PMEND
+  R
+
+:TYPECH                    # (type --)
+  D 2 E TCD *
+  D 3 E TCL *
+  ! 45 W R
+:TCD
+  ! 100 W R
+:TCL
+  ! 108 W R
+
+# civil date from a unix time (Howard Hinnant's days-to-civil), local time via $tzoff
+:DATEFMT                   # (t --)  YYYY-MM-DD HH:MM[:SS]
+  3478 F A
+  D 0 L DFNEG *
+:DFGO
+  D 86400 V 3513 T 86400 MOD 3514 T
+  3513 F 719468 A 3515 T
+  3515 F 146097 V 3516 T
+  3515 F 3516 F 146097 M S 3517 T
+  3517 F 3517 F 1460 V S 3517 F 36524 V A 3517 F 146096 V S 365 V 3518 T
+  3518 F 3516 F 400 M A 3519 T
+  3517 F 3518 F 365 M 3518 F 4 V A 3518 F 100 V S S 3520 T
+  3520 F 5 M 2 A 153 V 3521 T
+  3520 F 3521 F 153 M 2 A 5 V S + 3522 T
+  3521 F 10 L DFM1 *
+  3521 F 9 S 3523 T DFM2 B
+:DFM1
+  3521 F 3 A 3523 T
+:DFM2
+  3523 F 2 ^ 3519 F A 3519 T
+  3519 F Y 45 W 3523 F PAD2 C 45 W 3522 F PAD2 C
+  32 W 3514 F 3600 V PAD2 C 58 W 3514 F 60 V 60 MOD PAD2 C
+  3524 F DFRET J
+  58 W 3514 F 60 MOD PAD2 C
+:DFRET
+  R
+:DFNEG
+  ! 0 DFGO B
+
+# colours (only when stdout is a terminal)
+:CRED
+  3474 F CX1 J 27 W "[1;31m"
+:CX1
+  R
+:CGRN
+  3474 F CX2 J 27 W "[32m"
+:CX2
+  R
+:CMAG
+  3474 F CX3 J 27 W "[35m"
+:CX3
+  R
+:CBLU
+  3474 F CX4 J 27 W "[1;34m"
+:CX4
+  R
+:CYEL
+  3474 F CX5 J 27 W "[1;33m"
+:CX5
+  R
+:CRST
+  3474 F CX6 J 27 W "[0m"
+:CX6
+  R
+
+:NAMECOL                   # (addr --)  print a name coloured by $etype / $emode
+  3474 F NCPLAIN J
+  3525 F 2 E NCDIR *
+  3525 F 3 E NCLNK *
+  3525 F 1 E 3526 F 73 P BOOL P NCEXE *
+:NCPLAIN
+  SAFEPUTS C R
+:NCDIR
+  27 W "[1;34m" NCGO B
+:NCLNK
+  27 W "[1;36m" NCGO B
+:NCEXE
+  27 W "[1;32m"
+:NCGO
+  SAFEPUTS C 27 W "[0m" R
+
+:SAFEPUTS                  # (a --)  like PUTS, but control bytes show as ? on a terminal
+  3474 F PUTS J
+  D 3527 T
+:SPSCAN
+  D F D SPLAST J
+  D 32 L SWAP 127 E O SPCTL *
+  + SPSCAN B
+:SPLAST
+  ! 3527 F S 3527 F SWAP WRITEN C R
+:SPCTL
+  D 3527 F S 3527 F SWAP WRITEN C 63 W + D 3527 T SPSCAN B
+
+# errors:  "cmd: 'path': message"  on stderr
+:EPRE
+  ERRB C 3528 F PUTS C ": " R
+:EEND
+  CR ERRE C 1 3529 T R
+:PERR                      # (errno --)
+  4129 T 3056 4130 T 64 4131 T 19 SYS C ! 3056 PUTS C R
+:EFAIL                     # (path errno --)
+  3530 T 3531 T
+  EPRE C "'" 3531 F PUTS C "': " 3530 F PERR C EEND C R
+:MISSING
+  EPRE C "missing operand (try: help)" EEND C R
+
+:CLRSTK
+  , CLRMORE *
+  R
+:CLRMORE
+  ! CLRSTK B
+
+# =====================================================================
+#  line reader (UTF-8 encodes non-ASCII input) and tokenizer
+# =====================================================================
+
+:PUTLB                     # (b --)
+  3532 F 255 / PLFULL *
+  3532 F 0 A T
+  3532 PSTO R
+:PLFULL
+  ! 1 3533 T R
+
+:UTF8                      # (c --)  c >= 128
+  D 2048 L U8TWO *
+  D 65536 L U8THREE *
+  D 18 > 240 O PUTLB C
+  D 12 > 63 P 128 O PUTLB C
+  D 6 > 63 P 128 O PUTLB C
+  63 P 128 O PUTLB C R
+:U8THREE
+  D 12 > 224 O PUTLB C
+  D 6 > 63 P 128 O PUTLB C
+  63 P 128 O PUTLB C R
+:U8TWO
+  D 6 > 192 O PUTLB C
+  63 P 128 O PUTLB C R
+
+:READLINE                  # ( -- eof )
+  0 3532 T 0 3533 T
+:RLLP
+  ?
+  D 0 L RLEOF *
+  D 10 E RLEOL *
+  D 13 E RLSKIP *
+  D RLSKIP J
+  D 128 L RLASC *
+  UTF8 C RLLP B
+:RLASC
+  PUTLB C RLLP B
+:RLSKIP
+  ! RLLP B
+:RLEOL
+  ! RLFIN B
+:RLEOF
+  !
+  3532 F RLFIN *
+  0 0 T 1 R
+:RLFIN
+  0 3532 F 0 A T
+  3533 F RLWARN *
+  0 R
+:RLWARN
+  ERRB C "sak: line cut to 255 bytes" CR ERRE C 0 R
+
+:LCH                       # ( -- c )
+  3534 F 0 A F R
+
+:TOKENIZE                  # LINE -> ARGV/$argc, handles quotes, \x and > >> redirection
+  0 3534 T 0 3535 T 0 3536 T
+:TKNEXT
+  LCH C
+  D 32 E TKWS *
+  D 9 E TKWS *
+  D TKDONE J
+  !
+  3536 F 31 / TKFIN *
+  3535 F 256 A 3536 F 544 A T
+  3536 PSTO 0 3537 T
+:TKCH
+  LCH C
+  D TKEND J
+  3537 F TKINQ *
+  D 32 E TKEND *
+  D 9 E TKEND *
+  D 34 E TKQOPEN *
+  D 39 E TKQOPEN *
+  D 92 E TKBSL *
+  D 62 E TKGT *
+  TKPUT C
+:TKADV
+  3534 PSTO TKCH B
+:TKWS
+  ! 3534 PSTO TKNEXT B
+:TKDONE
+  ! TKFIN B
+:TKEND
+  ! 0 TKPUT C TKNEXT B
+:TKQOPEN
+  3537 T 3534 PSTO TKCH B
+:TKINQ
+  D 3537 F E TKQCLOSE *
+  TKPUT C TKADV B
+:TKQCLOSE
+  ! 0 3537 T TKADV B
+:TKBSL
+  ! 3534 PSTO LCH C D TKEND J
+  TKPUT C TKADV B
+:TKGT                      # unquoted > inside a word: split it off as its own word
+  !
+  3536 F - 544 A F 3535 F 256 A E TKGTSAME *
+  0 TKPUT C
+  3536 F 31 / TKFIN *
+  3535 F 256 A 3536 F 544 A T 3536 PSTO
+:TKGTSAME
+  62 TKPUT C 3534 PSTO
+  LCH C 62 = TKGTEND *
+  62 TKPUT C 3534 PSTO
+:TKGTEND
+  0 TKPUT C TKNEXT B
+:TKPUT                     # (c --)  the last ARGBUF cell is never written: always a NUL
+  3535 F 287 / TKPFULL *
+  3535 F 256 A T 3535 PSTO R
+:TKPFULL
+  ! R
+:TKFIN
+  0 3538 T 0 3539 T
+:RDLP
+  3539 F 3536 F / RDDONE *
+  3539 F 544 A F
+  D F 62 = RDNX *
+  + D F 62 E RDAPP *
+  1 3538 T RDTGT B
+:RDAPP
+  + 2 3538 T
+:RDTGT
+  D F RDHAVE *
+  ! 3539 F + D 3536 F L RDNOTGT J
+  544 A F
+:RDHAVE
+  3540 T
+  3539 F 3536 T
+  RDDONE B
+:RDNX
+  ! 3539 PSTO RDLP B
+:RDNOTGT
+  ! ERRB C "sak: missing file name after >" CR ERRE C
+  0 3538 T 0 3536 T
+:RDDONE
+  R
+
+# =====================================================================
+#  options, operands and wildcards
+# =====================================================================
+
+# PREP: argv[1..] -> option bits ($opts, letter a..z), a number ($optnum/$hasnum from -20,
+# -n20 or "-n 20" when $wantn = 1), operands -> OPND/$nop, $multi = several or wildcard.
+:PREP
+  0 3541 T 0 3542 T 0 3543 T 0 3544 T 0 3545 T 0 3546 T
+  1 3547 T
+:PPLP
+  3547 F 3536 F / PPDONE *
+  3547 F 544 A F 3548 T
+  3545 F PPOPND *
+  3548 F F 45 = PPOPND *
+  3548 F + F PPOPND J
+  3548 F + F 45 E PPDD *
+  3548 F + 3548 T
+:PPLET
+  3548 F F D PPLEND J
+  D 48 / OVER 57 ^ P PPDIG *
+  LOWER C
+  D 110 E 3549 F P PPNOPT *
+  D 97 L PPBAD *
+  D 122 G PPBAD *
+  97 S ONE SWAP SHL 3541 F O 3541 T
+  3548 PSTO PPLET B
+:PPBAD
+  ! EPRE C "ignoring unknown option in '" 3547 F 544 A F PUTS C "'" EEND C 0 3529 T
+  3547 PSTO PPLP B
+:PPDIG
+  ! 3548 F PARSENUM C 3543 T 1 3542 T
+  3547 PSTO PPLP B
+:PPNOPT
+  ! 3548 F + F PPNNEXT J
+  3548 F + PARSENUM C 3543 T 1 3542 T
+  3547 PSTO PPLP B
+:PPNNEXT
+  3547 PSTO 3547 F 3536 F / PPNMISS *
+  3547 F 544 A F PARSENUM C 3543 T 1 3542 T
+  3496 F PPNBAD *
+  3547 PSTO PPLP B
+:PPNBAD
+  EPRE C "-n needs a number, not '" 3547 F 544 A F PUTS C "'" EEND C
+  0 3542 T 3547 PSTO PPLP B
+:PPNMISS
+  EPRE C "-n needs a number" EEND C PPDONE B
+:PPLEND
+  ! 3547 PSTO PPLP B
+:PPOPND
+  3544 F 31 / PPSKIP *
+  3548 F 3544 F 576 A T 3544 PSTO
+  3548 F HASWILD C PPSKIP J
+  1 3546 T
+:PPSKIP
+  3547 PSTO PPLP B
+:PPDD
+  3548 F 2 A F PPDDSET J
+  EPRE C "ignoring unknown option '" 3548 F PUTS C "'" EEND C 0 3529 T
+  3547 PSTO PPLP B
+:PPDDSET
+  1 3545 T 3547 PSTO PPLP B
+:PPDONE
+  3544 F 1 G 3546 F O 3546 T R
+
+:OPT                       # (letter -- flag)
+  97 S ONE SWAP SHL 3541 F P BOOL R
+:OPTSET                    # (letter --)
+  97 S ONE SWAP SHL 3541 F O 3541 T R
+
+:SHIFTOP                   # drop the first operand
+  0 3550 T
+:SHLP
+  3550 F + 3544 F / SHEND *
+  3550 F + 576 A F 3550 F 576 A T 3550 PSTO SHLP B
+:SHEND
+  3544 F - 3544 T R
+
+# FOREACH: for every operand put its path in PA and call the routine in $hand.
+# Wildcards are expanded against the directory (sorted, dot-files only when the
+# pattern starts with a dot).  No match: the word is passed on as it is, like a shell.
+:FOREACH
+  0 3551 T
+:FELP
+  3551 F 3544 F / FEDONE *
+  3551 F 576 A F 3552 T
+  3552 F HASWILD C FEWILD *
+  3552 F 608 600 STRNCPY C
+  3484 F FELONG *
+  608 STRIPSL C
+  3553 F C FENX B
+:FEWILD
+  EXPAND C FENX B
+:FELONG
+  3552 F 36 EFAIL C
+:FENX
+  3551 PSTO FELP B
+:FEDONE
+  R
+
+:EXPAND
+  3552 F D BASENAME C SWAP S 3554 T
+  3552 F 3554 F A 2960 96 STRNCPY C
+  3552 F 608 600 STRNCPY C
+  0 3554 F 608 A T
+  3554 F EXHAVE *
+  3845 4129 T EXOPEN B
+:EXHAVE
+  608 4129 T
+:EXOPEN
+  2 SYS C EXLIT J
+  4134 F 3555 T 4135 F 3556 T 0 3557 T 0 3558 T
+:EXLP
+  3557 F 3556 F / EXEND *
+  3555 F 4129 T 3557 F 4130 T 2320 4131 T 256 4132 T 3 SYS C !
+  2320 F 46 E 2960 F 46 = P EXSKIP *
+  2960 2320 WMATCH C EXSKIP J
+  0 3554 F 608 A T
+  2320 608 600 APPENDS C EXSKIP J
+  3558 PSTO
+  3553 F C
+:EXSKIP
+  3557 PSTO EXLP B
+:EXEND
+  3555 F 4129 T 4 SYS C !
+  3558 F EXRET *
+:EXLIT
+  3552 F 608 600 STRNCPY C 3553 F C
+:EXRET
+  R
+
+# =====================================================================
+#  recursive directory walker
+#  PA (and PB when $wdual = 1) is the directory.  For every entry the walker appends
+#  "/name" to PA (and PB) and calls  $wfile  for files, or  $wpre  (returns: descend?),
+#  recurses, then  $wpost  for directories.  Entry data: $etype $emode $esize $elast.
+#  Symbolic links are never followed.  Per-level state lives in FRAMES[depth*7 + k]:
+#  0 handle  1 count  2 index  3 PA length  4 PB length  5 last visible index
+#  6 size accumulator (du).  Up to 48 levels deep.
+# =====================================================================
+
+:FR                        # (k -- addr)
+  3559 F 7 M A 3120 A R
+:NOOP
+  R
+:RET1
+  1 R
+
+:WALK
+  0 6 FR C T
+  3559 F 48 / WKDEEP *
+  608 4129 T 2 SYS C WKOPENF J
+  4134 F 0 FR C T 4135 F 1 FR C T 0 2 FR C T
+  608 STRLEN C 3 FR C T
+  1208 STRLEN C 4 FR C T
+  LASTVIS C 5 FR C T
+:WKLP
+  2 FR C F 1 FR C F / WKEND *
+  2 FR C F WKENT C
+  3560 F WKSHOW *
+  2320 F 46 E WKNEXT *
+:WKSHOW
+  2 FR C F 5 FR C F E 3561 T
+  608 ADDNAME C WKLONG J
+  3562 F WKNOB J
+  1208 ADDNAME C WKLONG J
+:WKNOB
+  3525 F 2 E WKDIR *
+  3563 F C WKREST B
+:WKDIR
+  3564 F C WKREST J
+  3559 PSTO WALK C 3559 F - 3559 T
+  3565 F C
+:WKREST
+  0 3 FR C F 608 A T
+  0 4 FR C F 1208 A T
+:WKNEXT
+  2 FR C PSTO WKLP B
+:WKLONG
+  0 3 FR C F 608 A T
+  EPRE C "path too long under '" 608 PUTS C "'" EEND C
+  WKREST B
+:WKEND
+  0 FR C F 4129 T 4 SYS C ! R
+:WKOPENF
+  608 4134 F EFAIL C R
+:WKDEEP
+  EPRE C "directory tree too deep at '" 608 PUTS C "'" EEND C R
+
+:WKENT                     # (idx --)  entry of this level's directory -> NAME, $etype ...
+  4130 T 0 FR C F 4129 T 2320 4131 T 256 4132 T 3 SYS C !
+  4135 F 3525 T 4136 F 3526 T 4137 F 3566 T R
+
+:LASTVIS                   # ( -- idx)  index of the last entry the walk will show
+  1 FR C F 3567 T
+:LVLP
+  3567 F LVNONE J
+  3567 F - D 3567 T WKENT C
+  3560 F LVHIT *
+  2320 F 46 = LVHIT *
+  LVLP B
+:LVHIT
+  3567 F R
+:LVNONE
+  0 R
+
+# =====================================================================
+#  main loop and dispatcher
+# =====================================================================
+
+:MAIN
+  # ---- write the string table into memory (generated) ----
+  108 3688 T  115 3689 T  0 3690 T   # c_ls
+  108 3691 T  108 3692 T  0 3693 T   # c_ll
+  99 3694 T  100 3695 T  0 3696 T   # c_cd
+  112 3697 T  119 3698 T  100 3699 T  0 3700 T   # c_pwd
+  99 3701 T  97 3702 T  116 3703 T  0 3704 T   # c_cat
+  116 3705 T  111 3706 T  117 3707 T  99 3708 T  104 3709 T  0 3710 T   # c_touch
+  99 3711 T  112 3712 T  0 3713 T   # c_cp
+  109 3714 T  118 3715 T  0 3716 T   # c_mv
+  114 3717 T  109 3718 T  0 3719 T   # c_rm
+  109 3720 T  107 3721 T  100 3722 T  105 3723 T  114 3724 T  0 3725 T   # c_mkdir
+  114 3726 T  109 3727 T  100 3728 T  105 3729 T  114 3730 T  0 3731 T   # c_rmdir
+  108 3732 T  110 3733 T  0 3734 T   # c_ln
+  115 3735 T  116 3736 T  97 3737 T  116 3738 T  0 3739 T   # c_stat
+  99 3740 T  104 3741 T  109 3742 T  111 3743 T  100 3744 T  0 3745 T   # c_chmod
+  101 3746 T  99 3747 T  104 3748 T  111 3749 T  0 3750 T   # c_echo
+  104 3751 T  101 3752 T  97 3753 T  100 3754 T  0 3755 T   # c_head
+  116 3756 T  97 3757 T  105 3758 T  108 3759 T  0 3760 T   # c_tail
+  119 3761 T  99 3762 T  0 3763 T   # c_wc
+  103 3764 T  114 3765 T  101 3766 T  112 3767 T  0 3768 T   # c_grep
+  120 3769 T  120 3770 T  100 3771 T  0 3772 T   # c_xxd
+  104 3773 T  101 3774 T  120 3775 T  100 3776 T  117 3777 T  109 3778 T  112 3779 T  0 3780 T   # c_hexdump
+  102 3781 T  105 3782 T  110 3783 T  100 3784 T  0 3785 T   # c_find
+  116 3786 T  114 3787 T  101 3788 T  101 3789 T  0 3790 T   # c_tree
+  100 3791 T  117 3792 T  0 3793 T   # c_du
+  100 3794 T  102 3795 T  0 3796 T   # c_df
+  99 3797 T  114 3798 T  99 3799 T  51 3800 T  50 3801 T  0 3802 T   # c_crc
+  114 3803 T  101 3804 T  97 3805 T  108 3806 T  112 3807 T  97 3808 T  116 3809 T  104 3810 T   # c_realpath
+  0 3811 T
+  100 3812 T  97 3813 T  116 3814 T  101 3815 T  0 3816 T   # c_date
+  119 3817 T  104 3818 T  111 3819 T  97 3820 T  109 3821 T  105 3822 T  0 3823 T   # c_whoami
+  99 3824 T  108 3825 T  101 3826 T  97 3827 T  114 3828 T  0 3829 T   # c_clear
+  104 3830 T  101 3831 T  108 3832 T  112 3833 T  0 3834 T   # c_help
+  101 3835 T  120 3836 T  105 3837 T  116 3838 T  0 3839 T   # c_exit
+  113 3840 T  117 3841 T  105 3842 T  116 3843 T  0 3844 T   # c_quit
+  46 3845 T  0 3846 T   # s_dot
+  46 3847 T  46 3848 T  0 3849 T   # s_dotdot
+  47 3850 T  0 3851 T   # s_slash
+  72 3852 T  79 3853 T  77 3854 T  69 3855 T  0 3856 T   # s_HOME
+  85 3857 T  83 3858 T  69 3859 T  82 3860 T  0 3861 T   # s_USER
+  76 3862 T  79 3863 T  71 3864 T  78 3865 T  65 3866 T  77 3867 T  69 3868 T  0 3869 T   # s_LOGNAME
+  45 3870 T  110 3871 T  0 3872 T   # s_dashn
+  45 3873 T  110 3874 T  97 3875 T  109 3876 T  101 3877 T  0 3878 T   # s_name
+  45 3879 T  105 3880 T  110 3881 T  97 3882 T  109 3883 T  101 3884 T  0 3885 T   # s_iname
+  45 3886 T  116 3887 T  121 3888 T  112 3889 T  101 3890 T  0 3891 T   # s_type
+  115 3892 T  97 3893 T  107 3894 T  0 3895 T   # s_sak
+  226 3896 T  148 3897 T  130 3898 T  32 3899 T  32 3900 T  32 3901 T  0 3902 T   # s_vbar
+  226 3903 T  148 3904 T  156 3905 T  226 3906 T  148 3907 T  128 3908 T  226 3909 T  148 3910 T   # s_tee
+  128 3911 T  32 3912 T  0 3913 T
+  226 3914 T  148 3915 T  148 3916 T  226 3917 T  148 3918 T  128 3919 T  226 3920 T  148 3921 T   # s_ell
+  128 3922 T  32 3923 T  0 3924 T
+  32 3925 T  32 3926 T  32 3927 T  32 3928 T  0 3929 T   # s_sp
+  4138 F 18003 E FSOK *
+  4138 F 1 E FSOFF *
+  "sak: this GATCloader.py has no file-system bridge." CR
+  "     Use the GATCloader.py (version 4.2 or later) that ships with sak.aa." CR
+  1 Q
+:FSOFF
+  "sak: file access is switched off. Run it with --fs:" CR
+  "  python3 GATCloader.py run sak.aa --no-banner --fs --max-steps 2000000000" CR
+  1 Q
+:FSOK
+  TTYCHK C
+  3475 F LOOP J
+  BANNER C
+:LOOP
+  CLRSTK C
+  TTYCHK C
+  PROMPT C
+  READLINE C BYE *
+  TOKENIZE C
+  3536 F 3538 F O LPNEXT J
+  3538 F RUNPLAIN J
+  3540 F 4129 T 3538 F - 4130 T 20 SYS C REDOK *
+  3892 3528 T 3540 F 4134 F EFAIL C
+  LPNEXT B
+:REDOK
+  TTYCHK C
+  DISPATCH C
+  0 4129 T 20 SYS C !
+  LPNEXT B
+:RUNPLAIN
+  DISPATCH C
+:LPNEXT
+  3568 F BYE *
+  3569 F BYE *
+  LOOP B
+:BYE
+  3475 F BYEQ J
+  3568 F BYEQ *
+  CR
+:BYEQ
+  3570 F Q
+
+:PROMPT
+  3475 F PRRET J
+  1208 4129 T 600 4130 T 15 SYS C !
+  3474 F PRPLAIN J
+  27 W "[1;32m" "sak" 27 W "[0m:" 27 W "[1;34m" 1208 PUTS C 27 W "[0m" "$ " R
+:PRPLAIN
+  "sak:" 1208 PUTS C "$ " R
+:PRRET
+  R
+
+:BANNER
+  CYEL C
+  "  ___   _   _  __" CR
+  " / __| /_\\ | |/ /   GATC swiss army knife" CR
+  " \\__ \\/ _ \\| ' <    file tools in GATC assembly" CR
+  " |___/_/ \\_\\_|\\_\\   type help for the command list" CR
+  CRST C CR R
+
+:ISCMD                     # (name -- flag)
+  3528 F STREQ C R
+
+:DISPATCH
+  3536 F DSNONE J
+  544 F 3528 T
+  0 3529 T 0 3549 T
+  3688 ISCMD C C_LS *
+  3691 ISCMD C C_LL *
+  3694 ISCMD C C_CD *
+  3697 ISCMD C C_PWD *
+  3701 ISCMD C C_CAT *
+  3705 ISCMD C C_TOUCH *
+  3711 ISCMD C C_CP *
+  3714 ISCMD C C_MV *
+  3717 ISCMD C C_RM *
+  3720 ISCMD C C_MKDIR *
+  3726 ISCMD C C_RMDIR *
+  3732 ISCMD C C_LN *
+  3735 ISCMD C C_STAT *
+  3740 ISCMD C C_CHMOD *
+  3746 ISCMD C C_ECHO *
+  3751 ISCMD C C_HEAD *
+  3756 ISCMD C C_TAIL *
+  3761 ISCMD C C_WC *
+  3764 ISCMD C C_GREP *
+  3769 ISCMD C C_XXD *
+  3773 ISCMD C C_XXD *
+  3781 ISCMD C C_FIND *
+  3786 ISCMD C C_TREE *
+  3791 ISCMD C C_DU *
+  3794 ISCMD C C_DF *
+  3797 ISCMD C C_CRC *
+  3803 ISCMD C C_REALPATH *
+  3812 ISCMD C C_DATE *
+  3817 ISCMD C C_WHOAMI *
+  3824 ISCMD C C_CLEAR *
+  3830 ISCMD C C_HELP *
+  3835 ISCMD C C_EXIT *
+  3840 ISCMD C C_EXIT *
+  EPRE C "command not found (type help)" EEND C
+:DSNONE
+  R
+
+# =====================================================================
+#  ls / ll
+# =====================================================================
+
+:C_LL
+  PREP C 108 OPTSET C 97 OPTSET C LSGO B
+:C_LS
+  PREP C
+:LSGO
+  108 OPT C 3571 T 97 OPT C 3572 T 104 OPT C 3573 T 100 OPT C 3574 T
+  0 3575 T
+  TIMEINIT C
+  3544 F LSHAVE *
+  3845 608 600 STRNCPY C LSPATH C R
+:LSHAVE
+  LSPATH 3553 T FOREACH C R
+
+:LSPATH                    # list PA
+  608 1 STATP C LSSTOK *
+  608 0 STATP C LSNOENT J
+:LSSTOK
+  3574 F LSFILE *
+  3471 F 2 E LSISDIR *
+:LSFILE
+  3571 F LSFLONG *
+  3471 F 3525 T 3472 F 3526 T 608 NAMECOL C CR
+  1 3575 T R
+:LSFLONG
+  608 LONGLINE C 1 3575 T R
+:LSISDIR
+  3546 F LSNOHDR J
+  3575 F LSNOCR J
+  CR
+:LSNOCR
+  608 PUTS C ":" CR
+:LSNOHDR
+  1 3575 T
+  3571 F LSLONG *
+  LSSHORT C R
+:LSNOENT
+  608 2 EFAIL C R
+
+:LSDIRENT                  # (idx --)  entry of the directory $lh -> NAME, $etype ...
+  4130 T 3576 F 4129 T 2320 4131 T 256 4132 T 3 SYS C !
+  4135 F 3525 T 4136 F 3526 T 4137 F 3566 T R
+
+:DISPW                     # (addr -- width)  UTF-8 aware
+  0 SWAP
+:DWLP
+  D F D DWEND J
+  192 P 128 = ROT A SWAP + DWLP B
+:DWEND
+  ] R
+
+# columns, sorted down then across like ls; up to 512 entries (more: one per line)
+:LSSHORT
+  608 4129 T 2 SYS C LSOPENF J
+  4134 F 3576 T 4135 F 3577 T
+  0 3578 T 0 3579 T 1 3580 T 0 3581 T
+:LSS1
+  3578 F 3577 F / LSS2 *
+  3578 F LSDIRENT C
+  3572 F LSS1V *
+  2320 F 46 E LSS1N *
+:LSS1V
+  3579 F 512 / LSS1F *
+  3578 F 3579 F 1808 A T 3579 PSTO
+  2320 DISPW C 3580 F MAX 3580 T
+  LSS1N B
+:LSS1F
+  1 3581 T
+:LSS1N
+  3578 PSTO LSS1 B
+:LSS2
+  3581 F LSONE *
+  3579 F LSSEND J
+  3580 F 2 A 3582 T
+  3476 F 3582 F V 1 MAX 3583 T
+  3579 F 3583 F A - 3583 F V 3584 T
+  0 3585 T
+:LSROW
+  3585 F 3584 F / LSSEND *
+  0 3586 T
+:LSCOL
+  3586 F 3584 F M 3585 F A
+  D 3579 F / LSCOLEND *
+  1808 A F LSDIRENT C
+  2320 NAMECOL C
+  3586 PSTO
+  3586 F 3584 F M 3585 F A 3579 F L LSCOL J
+  3582 F 2320 DISPW C S SPACES C
+  LSCOL B
+:LSCOLEND
+  ! CR 3585 PSTO LSROW B
+:LSONE                     # very large directory: one name per line, no limit
+  0 3578 T
+:LSOLP
+  3578 F 3577 F / LSSEND *
+  3578 F LSDIRENT C
+  3572 F LSOSHOW *
+  2320 F 46 E LSONX *
+:LSOSHOW
+  2320 NAMECOL C CR
+:LSONX
+  3578 PSTO LSOLP B
+:LSSEND
+  3576 F 4129 T 4 SYS C ! R
+:LSOPENF
+  608 4134 F EFAIL C R
+
+:LSLONG
+  608 4129 T 2 SYS C LSOPENF J
+  4134 F 3576 T 4135 F 3577 T 0 3578 T
+  608 STRLEN C 3587 T
+:LSLLP
+  3578 F 3577 F / LSSEND *
+  3578 F LSDIRENT C
+  3572 F LSLSHOW *
+  2320 F 46 E LSLNX *
+:LSLSHOW
+  608 ADDNAME C LSLREST J
+  2320 LONGLINE C
+:LSLREST
+  0 3587 F 608 A T
+:LSLNX
+  3578 PSTO LSLLP B
+
+:LONGLINE                  # (name --)  PA = the path:  drwxr-xr-x  4096 2026-11-22 13:34 name
+  3588 T
+  608 0 STATP C LLFAIL J
+  3471 F TYPECH C 3472 F PERMS C 32 W
+  3573 F LLHUM *
+  3470 F 9 PADNUM C LLDATE B
+:LLHUM
+  3470 F 6 HUMAN C
+:LLDATE
+  32 W 0 3524 T 3473 F DATEFMT C 32 W
+  3471 F 3525 T 3472 F 3526 T
+  3588 F NAMECOL C
+  3471 F 3 E LLLINK *
+  CR R
+:LLLINK
+  " -> " 608 4129 T 2576 4130 T 256 4131 T 28 SYS C LLNL J
+  2576 PUTS C
+:LLNL
+  CR R
+:LLFAIL
+  608 4134 F EFAIL C R
+
+# =====================================================================
+#  cd pwd realpath whoami date clear exit
+# =====================================================================
+
+:C_PWD
+  1208 4129 T 600 4130 T 15 SYS C ! 1208 PUTS C CR R
+
+:C_CD
+  PREP C
+  3544 F CDHOME J
+  576 F 608 600 STRNCPY C CDGO B
+:CDHOME
+  3852 4129 T 608 4130 T 600 4131 T 23 SYS C CDGO *
+  EPRE C "HOME is not set" EEND C R
+:CDGO
+  608 4129 T 14 SYS C CDOK *
+  608 4134 F EFAIL C
+:CDOK
+  R
+
+:C_REALPATH
+  PREP C 3544 F MISSING J
+  RPF 3553 T FOREACH C R
+:RPF
+  608 4129 T 1208 4130 T 600 4131 T 22 SYS C RPOK *
+  608 4134 F EFAIL C R
+:RPOK
+  1208 PUTS C CR R
+
+:C_WHOAMI
+  3857 4129 T 2576 4130 T 256 4131 T 23 SYS C WHOK *
+  3862 4129 T 23 SYS C WHOK *
+  "unknown" CR R
+:WHOK
+  2576 PUTS C CR R
+
+:C_DATE
+  TIMEINIT C
+  3477 F 3478 F A 86400 V 4 A 7 MOD
+  D DAYSUN J
+  D 1 E DAYMON *
+  D 2 E DAYTUE *
+  D 3 E DAYWED *
+  D 4 E DAYTHU *
+  D 5 E DAYFRI *
+  "Sat" DAYGO B
+:DAYSUN
+  "Sun" DAYGO B
+:DAYMON
+  "Mon" DAYGO B
+:DAYTUE
+  "Tue" DAYGO B
+:DAYWED
+  "Wed" DAYGO B
+:DAYTHU
+  "Thu" DAYGO B
+:DAYFRI
+  "Fri"
+:DAYGO
+  ! 32 W 1 3524 T 3477 F DATEFMT C 0 3524 T
+  " UTC" 3478 F D DATEZERO J
+  D 0 L DATEMIN *
+  43 W DATEOFF B
+:DATEMIN
+  45 W ~
+:DATEOFF
+  D 3600 V Y 3600 MOD 60 V D DATEZERO J 58 W PAD2 C CR R
+:DATEZERO
+  ! CR R
+
+:C_CLEAR
+  27 W "[H" 27 W "[2J" R
+
+:C_EXIT
+  1 3568 T 0 3570 T
+  3536 F 2 L EXRET2 *
+  1 544 A F PARSENUM C 3570 T
+:EXRET2
+  R
+
+# =====================================================================
+#  cat [-n]      cat > file  (type lines, a single . ends)
+# =====================================================================
+
+:C_CAT
+  PREP C
+  3544 F CATSTDIN J
+  CATF 3553 T FOREACH C R
+:CATF
+  608 1 STATP C CATERR J
+  3471 F 2 E CATDIR *
+  608 0 FOPEN C CATERR J 4134 F 3589 T
+  110 OPT C CATNUM *
+:CATLP
+  3589 F BREAD C D CATEND J
+  1808 SWAP WRITEN C CATLP B
+:CATEND
+  ! 3589 F FCLOSE C R
+:CATDIR
+  EPRE C "'" 608 PUTS C "': Is a directory" EEND C R
+:CATERR
+  608 4134 F EFAIL C R
+:CATNUM
+  1 3590 T
+:CNLP
+  3589 F BREAD C D CATEND J 3591 T
+  0 3592 T 0 3593 T
+:CNBY
+  3592 F 3591 F / CNFLUSH *
+  3590 F CNNOHDR J
+  3594 PSTO 3594 F 6 PADNUM C 9 W 0 3590 T
+:CNNOHDR
+  3592 F 1808 A F 10 E CNNL *
+  3592 PSTO CNBY B
+:CNNL
+  1808 3593 F A 3592 F 3593 F S + WRITEN C
+  3592 F + D 3592 T 3593 T 1 3590 T CNBY B
+:CNFLUSH
+  1808 3593 F A 3591 F 3593 F S WRITEN C CNLP B
+
+:CATSTDIN
+  0 3594 T
+  3475 F CSLP J
+  ERRB C "(type the text; a line with only . ends it)" CR ERRE C
+:CSLP
+  READLINE C 3569 T
+  3569 F 3532 F N P CSEND *
+  3532 F 1 E 0 F 46 E P CSEND *
+  0 3532 F WRITEN C CR
+  3569 F CSEND *
+  CSLP B
+:CSEND
+  R
+
+# =====================================================================
+#  touch mkdir [-p] rmdir
+# =====================================================================
+
+:C_TOUCH
+  PREP C 3544 F MISSING J
+  TOUCHF 3553 T FOREACH C R
+:TOUCHF
+  608 1 STATP C TCNEW J
+  608 4129 T 16 SYS C TCOK *
+  TCERR B
+:TCNEW
+  608 3 FOPEN C TCERR J
+  4134 F FCLOSE C R
+:TCERR
+  608 4134 F EFAIL C
+:TCOK
+  R
+
+:C_MKDIR
+  PREP C 3544 F MISSING J
+  MKDIRF 3553 T FOREACH C R
+:MKDIRF
+  608 4129 T 112 OPT C 4130 T 5 SYS C MKOK *
+  608 4134 F EFAIL C R
+:MKOK
+  118 OPT C MKRET J
+  "created directory '" 608 PUTS C "'" CR
+:MKRET
+  R
+
+:C_RMDIR
+  PREP C 3544 F MISSING J
+  RMDIRF 3553 T FOREACH C R
+:RMDIRF
+  608 4129 T 6 SYS C RDOK *
+  608 4134 F EFAIL C
+:RDOK
+  R
+
+# =====================================================================
+#  rm [-r] [-f] [-v]
+# =====================================================================
+
+:C_RM
+  PREP C
+  114 OPT C 3595 T 102 OPT C 3596 T 118 OPT C 3597 T
+  3544 F RMMISS J
+  RMF 3553 T FOREACH C R
+:RMMISS
+  3596 F RMRET *
+  MISSING B
+:RMF
+  608 0 STATP C RMNOENT J
+  3471 F 2 E RMDIR1 *
+  608 UNLINKP C R
+:RMNOENT                   # -f hides only "No such file or directory"
+  3596 F 4134 F 2 E P RMRET *
+  608 4134 F EFAIL C
+:RMRET
+  R
+:RMDIR1
+  3595 F RMISDIR J
+  608 BASENAME C D 3845 STREQ C SWAP 3847 STREQ C O RMREFUSE *
+  608 3850 SAMEF C RMREFUSE *
+  3596 F RMGO *
+  3475 F RMGO J
+  ERRB C "rm: remove directory '" 608 PUTS C "' and everything in it? [y/N] " ERRE C
+  READLINE C 3569 T
+  0 F LOWER C 121 = RMRET *
+:RMGO
+  0 3559 T 1 3560 T 0 3562 T
+  RET1 3564 T RMWFILE 3563 T RMWPOST 3565 T
+  WALK C
+  608 RMDIRP C R
+:RMISDIR
+  EPRE C "cannot remove '" 608 PUTS C "': Is a directory (use rm -r)" EEND C R
+:RMREFUSE
+  EPRE C "refusing to remove '" 608 PUTS C "'" EEND C R
+:RMWFILE
+  608 UNLINKP C R
+:RMWPOST
+  608 RMDIRP C R
+:UNLINKP                   # (path --)
+  D 4129 T 7 SYS C ULFAIL J
+  3597 F ULQ J
+  "removed '" PUTS C "'" CR R
+:ULQ
+  ! R
+:ULFAIL
+  4134 F EFAIL C R
+:RMDIRP                    # (path --)
+  D 4129 T 6 SYS C ULFAIL J
+  3597 F ULQ J
+  "removed directory '" PUTS C "'" CR R
+
+# =====================================================================
+#  cp [-r] [-v]     mv [-v]     ln [-s]
+# =====================================================================
+
+:DESTPREP                  # last operand -> $dst ; $dstdir = it is a directory ; ( -- ok)
+  3544 F 2 / DPUSAGE J
+  3544 F - D 3544 T 576 A F 3598 T
+  3544 F 1 G 0 576 A F HASWILD C O 3546 T
+  3598 F 1 STATP C 3471 F 2 E P 3599 T
+  3599 F DPOK *
+  3546 F DPNOTDIR *
+:DPOK
+  1 R
+:DPNOTDIR
+  EPRE C "target '" 3598 F PUTS C "' is not a directory" EEND C 0 R
+:DPUSAGE
+  EPRE C "usage: " 3528 F PUTS C " [options] SOURCE... DEST" EEND C 0 R
+
+:DSTPATH                   # PB = destination for PA ( -- ok)
+  3598 F 1208 600 STRNCPY C
+  3599 F DSPDIR *
+  3484 F N R
+:DSPDIR
+  1208 STRIPSL C
+  608 BASENAME C 1208 PATHJOIN C R
+
+:C_CP
+  PREP C
+  114 OPT C 3600 T 118 OPT C 3601 T
+  DESTPREP C CPDO *
+  R
+:CPDO
+  CPF 3553 T FOREACH C R
+:CPF
+  DSTPATH C CPLONG J
+  608 3600 F N STATP C CPERR J
+  608 1208 SAMEF C CPSAME *
+  3471 F 2 E CPDIR *
+  3471 F 3 E CPLINK *
+  COPYFILE C CPVERB B
+:CPDIR
+  3600 F CPOMIT J
+  4135 F CPINTO *
+  1208 4129 T 1 4130 T 5 SYS C CPMKFAIL J
+  CPTREE C CPVERB B
+:CPLINK
+  COPYLINK C
+:CPVERB
+  3601 F CPRET J
+  "'" 608 PUTS C "' -> '" 1208 PUTS C "'" CR
+:CPRET
+  R
+:CPLONG
+  608 36 EFAIL C R
+:CPERR
+  608 4134 F EFAIL C R
+:CPMKFAIL
+  1208 4134 F EFAIL C R
+:CPSAME
+  EPRE C "'" 608 PUTS C "' and '" 1208 PUTS C "' are the same file" EEND C R
+:CPINTO
+  EPRE C "cannot copy '" 608 PUTS C "' into itself" EEND C R
+:CPOMIT
+  EPRE C "-r not given; omitting directory '" 608 PUTS C "'" EEND C R
+
+:CPTREE                    # copy the tree PA into the existing directory PB
+  0 3559 T 1 3560 T 1 3562 T
+  CPWPRE 3564 T CPWFILE 3563 T NOOP 3565 T
+  WALK C R
+:CPWPRE
+  1208 4129 T 1 4130 T 5 SYS C CPWPOK *
+  1208 4134 F EFAIL C 0 R
+:CPWPOK
+  1 R
+:CPWFILE
+  3525 F 3 E CPWLNK *
+  3525 F 1 E CPWREG *
+  EPRE C "skipping special file '" 608 PUTS C "'" EEND C R
+:CPWREG
+  COPYFILE C R
+:CPWLNK
+  COPYLINK C R
+
+:COPYFILE                  # PA -> PB, keeps the permission bits
+  608 1 STATP C CFERRA J 3472 F 3602 T
+  608 0 FOPEN C CFERRA J 4134 F 3603 T
+  1208 1 FOPEN C CFERRB J 4134 F 3604 T
+:CFLP
+  3603 F BREAD C D CFDONE J
+  3604 F 4129 T 1808 4130 T 4131 T 11 SYS C CFLP *
+  1208 4134 F EFAIL C 0
+:CFDONE
+  ! 3603 F FCLOSE C 3604 F FCLOSE C
+  1208 4129 T 3602 F 4130 T 17 SYS C ! R
+:CFERRA
+  608 4134 F EFAIL C R
+:CFERRB
+  4134 F 3605 T 3603 F FCLOSE C 1208 3605 F EFAIL C R
+
+:COPYLINK                  # PA is a symlink: make PB a symlink with the same target
+  608 4129 T 2576 4130 T 256 4131 T 28 SYS C CLERRA J
+  2576 4129 T 1208 4130 T 0 4131 T 27 SYS C CLOK *
+  1208 4134 F EFAIL C
+:CLOK
+  R
+:CLERRA
+  608 4134 F EFAIL C R
+
+:C_MV
+  PREP C
+  118 OPT C 3606 T 0 3601 T
+  DESTPREP C MVDO *
+  R
+:MVDO
+  MVF 3553 T FOREACH C R
+:MVF
+  DSTPATH C CPLONG J
+  608 0 STATP C CPERR J
+  608 1208 SAMEF C CPSAME *
+  4135 F MVINTO *
+  608 4129 T 1208 4130 T 8 SYS C MVOK *
+  4134 F 18 E MVXDEV *
+  608 4134 F EFAIL C R
+:MVOK
+  3606 F MVRET J
+  "renamed '" 608 PUTS C "' -> '" 1208 PUTS C "'" CR
+:MVRET
+  R
+:MVINTO
+  EPRE C "cannot move '" 608 PUTS C "' into itself" EEND C R
+:MVXDEV                    # other file system: copy, then remove the original
+  0 3529 T 0 3597 T 1 3600 T
+  3471 F 3607 T
+  3607 F 2 E MVXDIR *
+  3607 F 3 E MVXLNK *
+  COPYFILE C MVXRM B
+:MVXLNK
+  COPYLINK C MVXRM B
+:MVXDIR
+  1208 4129 T 1 4130 T 5 SYS C CPMKFAIL J
+  CPTREE C
+:MVXRM
+  3529 F MVRET *
+  3607 F 2 E MVXRMD *
+  608 UNLINKP C MVOK B
+:MVXRMD
+  0 3559 T 1 3560 T 0 3562 T
+  RET1 3564 T RMWFILE 3563 T RMWPOST 3565 T
+  WALK C 608 RMDIRP C MVOK B
+
+:C_LN
+  PREP C 3544 F MISSING J
+  576 F 3608 T
+  3608 F 608 600 STRNCPY C 608 STRIPSL C
+  3544 F 2 L LNONE *
+  1 576 A F 3598 T
+  3598 F 1 STATP C 3471 F 2 E P 3599 T
+  DSTPATH C CPLONG J
+  LNDO B
+:LNONE
+  608 BASENAME C 1208 600 STRNCPY C
+:LNDO
+  3608 F 4129 T 1208 4130 T 115 OPT C N 4131 T 27 SYS C LNOK *
+  1208 4134 F EFAIL C R
+:LNOK
+  R
+
+# =====================================================================
+#  stat   chmod MODE (755, u+x, go-w, a=r ...)
+# =====================================================================
+
+:C_STAT
+  PREP C 3544 F MISSING J
+  TIMEINIT C
+  STATF 3553 T FOREACH C R
+:STATF
+  608 0 STATP C STERR J
+  "  File: " 608 PUTS C
+  3471 F 3 E STLNK J
+  " -> " 608 4129 T 2576 4130 T 256 4131 T 28 SYS C STLNK J 2576 PUTS C
+:STLNK
+  CR "  Size: " 3470 F Y
+  3470 F 1024 L STSMALL *
+  "  (" 3470 F 0 HUMAN C ")"
+:STSMALL
+  "   Type: "
+  3471 F 1 E STREG *
+  3471 F 2 E STDIR *
+  3471 F 3 E STSYM *
+  "other" STMODE B
+:STREG
+  "regular file" STMODE B
+:STDIR
+  "directory" STMODE B
+:STSYM
+  "symbolic link"
+:STMODE
+  CR "  Mode: " 3472 F OCT4 C "  (" 3471 F TYPECH C 3472 F PERMS C ")" CR
+  "Modify: " 1 3524 T 3473 F DATEFMT C 0 3524 T CR R
+:STERR
+  608 4134 F EFAIL C R
+
+:C_CHMOD
+  PREP C 3544 F 2 / CMUSE J
+  576 F 3609 T SHIFTOP C
+  CHMODF 3553 T FOREACH C R
+:CMUSE
+  EPRE C "usage: chmod MODE FILE...   (MODE: 755 or u+x,go-w,a=r)" EEND C R
+:CHMODF
+  608 1 STATP C CMERR J
+  3472 F MODECALC C CMBAD J
+  4130 T 608 4129 T 17 SYS C CMOK *
+:CMERR
+  608 4134 F EFAIL C R
+:CMOK
+  R
+:CMBAD
+  ! EPRE C "invalid mode '" 3609 F PUTS C "'" EEND C R
+
+:MODECALC                  # (old -- new ok)
+  3610 T 3609 F 3611 T
+  3611 F F 48 L MCSYM *
+  3611 F F 55 G MCSYM *
+  0 3610 T
+:MCOCT
+  3611 F F D MCOK J
+  D 48 L MCBADC *
+  D 55 G MCBADC *
+  48 S 3610 F 8 M A 3610 T 3611 PSTO MCOCT B
+:MCBADC
+  ! 0 0 R
+:MCOK
+  ! 3610 F 1 R
+:MCSYM
+  0 3612 T
+:MCWHO
+  3611 F F
+  D 117 E MCU *
+  D 103 E MCG *
+  D 111 E MCO *
+  D 97 E MCA *
+  ! MCOP B
+:MCU
+  ! 448 MCADDW B
+:MCG
+  ! 56 MCADDW B
+:MCO
+  ! 7 MCADDW B
+:MCA
+  ! 511
+:MCADDW
+  3612 F O 3612 T 3611 PSTO MCWHO B
+:MCOP
+  3612 F MCWSET *
+  511 3612 T
+:MCWSET
+  3611 F F 3613 T
+  3613 F 43 E 3613 F 45 E O 3613 F 61 E O MCBADS J
+  3611 PSTO 0 3614 T
+:MCPERM
+  3611 F F
+  D 114 E MCR *
+  D 119 E MCW *
+  D 120 E MCX *
+  !
+  3614 F 3612 F P 3614 T
+  3613 F 43 E MCPLUS *
+  3613 F 45 E MCMINUS *
+  3610 F 3612 F INV P 3614 F O 3610 T MCNEXT B
+:MCPLUS
+  3610 F 3614 F O 3610 T MCNEXT B
+:MCMINUS
+  3610 F 3614 F INV P 3610 T
+:MCNEXT
+  3611 F F D MCOK J
+  D 43 E OVER 45 E O OVER 61 E O MCMORE *
+  44 E MCCOMMA *
+  MCBADS B
+:MCMORE
+  ! MCWSET B
+:MCCOMMA
+  3611 PSTO MCSYM B
+:MCR
+  ! 292 MCADDB B
+:MCW
+  ! 146 MCADDB B
+:MCX
+  ! 73
+:MCADDB
+  3614 F O 3614 T 3611 PSTO MCPERM B
+:MCBADS
+  0 0 R
+
+# =====================================================================
+#  echo [-n] words
+# =====================================================================
+
+:C_ECHO
+  1 3547 T 0 3615 T
+  3536 F 2 L ECLP *
+  1 544 A F 3870 STREQ C ECLP J
+  1 3615 T 2 3547 T
+:ECLP
+  3547 F 3536 F / ECEND *
+  3547 F 544 A F PUTS C
+  3547 PSTO
+  3547 F 3536 F L ECLP J
+  32 W ECLP B
+:ECEND
+  3615 F ECRET *
+  CR
+:ECRET
+  R
+
+# =====================================================================
+#  head / tail [-n N]   (also -N)
+# =====================================================================
+
+:HDRMAYBE                  # "==> file <==" when there are several files
+  3546 F HDRET J
+  3616 F HDNOCR J
+  CR
+:HDNOCR
+  1 3616 T CYEL C "==> " 608 PUTS C " <==" CRST C CR
+:HDRET
+  R
+:NUMDEF                    # set $hn from -n, default 10
+  10 3617 T 0 3616 T
+  3542 F NDRET J
+  3543 F 3617 T
+:NDRET
+  R
+:OPENREG                   # ( -- ok)  PA must be an existing non-directory; fd in $fd
+  608 1 STATP C ORERR J
+  3471 F 2 E ORDIR *
+  608 0 FOPEN C ORERR J
+  4134 F 3618 T 1 R
+:ORERR
+  608 4134 F EFAIL C 0 R
+:ORDIR
+  EPRE C "'" 608 PUTS C "': Is a directory" EEND C 0 R
+
+:C_HEAD
+  1 3549 T PREP C 3544 F MISSING J NUMDEF C
+  HEADF 3553 T FOREACH C R
+:HEADF
+  HDRMAYBE C
+  OPENREG C HFRET J
+  0 3619 T
+  3617 F HFDONE J
+:HFBLK
+  3618 F BREAD C D HFEND J 3620 T
+  0 3621 T
+:HFBY
+  3621 F 3620 F / HFALL *
+  3621 F 1808 A F 10 E HFNL *
+  3621 PSTO HFBY B
+:HFNL
+  3619 PSTO 3619 F 3617 F / HFLAST *
+  3621 PSTO HFBY B
+:HFLAST
+  1808 3621 F + WRITEN C HFDONE B
+:HFALL
+  1808 3620 F WRITEN C HFBLK B
+:HFEND
+  !
+:HFDONE
+  3618 F FCLOSE C
+:HFRET
+  R
+
+:C_TAIL
+  1 3549 T PREP C 3544 F MISSING J NUMDEF C
+  TAILF 3553 T FOREACH C R
+:TAILF                     # read backwards from the end in 512-byte blocks counting newlines
+  HDRMAYBE C
+  OPENREG C TFRET J
+  3470 F 3622 T
+  3617 F TFDONE J
+  3622 F 3623 T 0 3624 T 0 3625 T
+:TFBLK
+  3623 F TFSTREAM J
+  3623 F 512 MIN 3626 T
+  3623 F 3626 F S 3623 T
+  3618 F 3623 F FSEEK C
+  3618 F BREAD C !
+  3626 F 3627 T
+:TFBY
+  3627 F TFBLK J
+  3627 F - 3627 T
+  3627 F 1808 A F 10 = TFBY *
+  3623 F 3627 F A D 3622 F - = TFCOUNT *
+  ! TFBY B
+:TFCOUNT
+  3624 PSTO 3624 F 3617 F / TFFOUND *
+  ! TFBY B
+:TFFOUND
+  + 3625 T
+:TFSTREAM
+  3618 F 3625 F FSEEK C
+:TFSL
+  3618 F BREAD C D TFEND J
+  1808 SWAP WRITEN C TFSL B
+:TFEND
+  !
+:TFDONE
+  3618 F FCLOSE C
+:TFRET
+  R
+
+# =====================================================================
+#  wc [-l] [-w] [-c]
+# =====================================================================
+
+:C_WC
+  PREP C 3544 F MISSING J
+  108 OPT C 3628 T 119 OPT C 3629 T 99 OPT C 3630 T
+  3628 F 3629 F O 3630 F O WCSOME *
+  1 3628 T 1 3629 T 1 3630 T
+:WCSOME
+  0 3631 T 0 3632 T 0 3633 T 0 3634 T
+  WCF 3553 T FOREACH C
+  3634 F 2 L WCRET *
+  3631 F 3632 F 3633 F WCOUT C "total" CR
+:WCRET
+  R
+:WCOUT                     # (lines words bytes --)
+  3635 T 3636 T 3637 T
+  3628 F WCO3 J 3637 F 7 PADNUM C 32 W
+:WCO3
+  3629 F WCO4 J 3636 F 7 PADNUM C 32 W
+:WCO4
+  3630 F WCO5 J 3635 F 7 PADNUM C 32 W
+:WCO5
+  R
+:WCF
+  OPENREG C WCFRET J
+  0 3638 T 0 3639 T 0 3640 T 0 3641 T
+:WCBLK
+  3618 F BREAD C D WCEOF J 3642 T
+  3642 F 3640 MADD
+  0 3643 T
+:WCBY
+  3643 F 3642 F / WCBLK *
+  3643 F 1808 A F
+  D 10 E WCNL *
+  D 32 E WCWS *
+  D 9 / OVER 13 ^ P WCWS *
+  ! 3641 F WCNX *
+  1 3641 T 3639 PSTO WCNX B
+:WCNL
+  3638 PSTO
+:WCWS
+  ! 0 3641 T
+:WCNX
+  3643 PSTO WCBY B
+:WCEOF
+  ! 3618 F FCLOSE C
+  3638 F 3639 F 3640 F WCOUT C 608 PUTS C CR
+  3638 F 3631 MADD 3639 F 3632 MADD 3640 F 3633 MADD 3634 PSTO
+:WCFRET
+  R
+
+# =====================================================================
+#  grep [-i] [-n] [-v] [-c] [-l] [-r] PATTERN FILE...   (plain text, not regex)
+# =====================================================================
+
+:C_GREP
+  PREP C
+  114 OPT C 3544 F 1 E P GRDOT J
+  3845 3544 F 576 A T 3544 PSTO
+:GRDOT
+  3544 F 2 / GRUSE J
+  576 F 2832 128 STRNCPY C
+  105 OPT C 3644 T 110 OPT C 3645 T 118 OPT C 3646 T
+  99 OPT C 3647 T 108 OPT C 3648 T 114 OPT C 3649 T
+  3644 F GRNOI J
+  2832 LOWERBUF C
+:GRNOI
+  2832 STRLEN C 3650 T
+  SHIFTOP C
+  3544 F 1 G 3649 F O 0 576 A F HASWILD C O 3651 T
+  GREPF 3553 T FOREACH C R
+:GRUSE
+  EPRE C "usage: grep [-i -n -v -c -l -r] TEXT FILE..." EEND C R
+:GREPF
+  608 1 STATP C GFERR J
+  3471 F 2 E GFDIR *
+  GREPFILE C R
+:GFERR
+  608 4134 F EFAIL C R
+:GFDIR
+  3649 F GFDIRMSG J
+  0 3559 T 1 3560 T 0 3562 T
+  RET1 3564 T GRWFILE 3563 T NOOP 3565 T
+  WALK C R
+:GFDIRMSG
+  EPRE C "'" 608 PUTS C "': Is a directory (use grep -r)" EEND C R
+:GRWFILE
+  3525 F 1 E GRWGO *
+  R
+:GRWGO
+  GREPFILE C R
+
+:GREPFILE                  # search PA line by line (lines over 255 bytes are cut)
+  608 0 FOPEN C GFERR J 4134 F 3652 T
+  0 3653 T 0 3654 T 0 3655 T 0 3656 T
+:GRBLK
+  3652 F BREAD C D GREOF J 3657 T
+  0 3658 T
+:GRBY
+  3656 F GREND *
+  3658 F 3657 F / GRBLK *
+  3658 F 1808 A F
+  D 10 E GRNL *
+  3653 F 255 / GRFULL *
+  3653 F 2576 A T 3653 PSTO 3658 PSTO GRBY B
+:GRFULL
+  ! 3658 PSTO GRBY B
+:GRNL
+  ! GRLINE C 0 3653 T 3658 PSTO GRBY B
+:GREOF
+  !
+  3656 F GREND *
+  3653 F GREND J
+  GRLINE C
+:GREND
+  3652 F FCLOSE C
+  3647 F GRCOUNT *
+  R
+:GRCOUNT
+  3651 F GRCN J
+  CMAG C 608 PUTS C CRST C 58 W
+:GRCN
+  3655 F Y CR R
+
+:GRLINE
+  3654 PSTO
+  FINDPAT C 3659 T
+  3659 F BOOL 3646 F X GLRET J
+  3655 PSTO
+  3648 F GLFILE *
+  3647 F GLRET *
+  3651 F GLNONAME J
+  CMAG C 608 PUTS C CRST C 58 W
+:GLNONAME
+  3645 F GLNONUM J
+  CGRN C 3654 F Y CRST C 58 W
+:GLNONUM
+  3474 F 3646 F N P 3659 F BOOL P GLHI *
+  2576 3653 F WRITEN C CR R
+:GLHI
+  2576 3659 F - WRITEN C
+  CRED C 2576 3659 F - A 3650 F WRITEN C CRST C
+  2576 3659 F - 3650 F A A 3653 F 3659 F - 3650 F A S WRITEN C CR R
+:GLFILE
+  CMAG C 608 PUTS C CRST C CR 1 3656 T
+:GLRET
+  R
+
+:FINDPAT                   # ( -- pos)  1-based position of PAT in LBUF, 0 = not found
+  3650 F 3653 F G FPNONE *
+  0 3660 T
+:FPS
+  3660 F 3650 F A 3653 F G FPNONE *
+  0 3661 T
+:FPK
+  3661 F 3650 F / FPHIT *
+  3660 F 3661 F A 2576 A F
+  3644 F FPNOF J
+  LOWER C
+:FPNOF
+  3661 F 2832 A F = FPMISS *
+  3661 PSTO FPK B
+:FPMISS
+  3660 PSTO FPS B
+:FPHIT
+  3660 F + R
+:FPNONE
+  0 R
+
+# =====================================================================
+#  xxd / hexdump [-n LEN]
+# =====================================================================
+
+:C_XXD
+  1 3549 T PREP C 3544 F MISSING J
+  0 3616 T 2147483647 3662 T
+  3542 F XXGO J
+  3543 F 3662 T
+:XXGO
+  XXDF 3553 T FOREACH C R
+:XXDF
+  HDRMAYBE C
+  OPENREG C XDRET J
+  0 3663 T
+:XBLK
+  3663 F 3662 F / XDONE *
+  3618 F BREAD C D XEOF J 3556 T
+  3556 F 3662 F 3663 F S MIN 3556 T
+  0 3664 T
+:XROW
+  3664 F 3556 F / XBLK *
+  3556 F 3664 F S 16 MIN 3665 T
+  CYEL C 3663 F 8 HEXN C 58 W CRST C 32 W
+  0 3666 T
+:XHEX
+  3666 F 16 / XASC *
+  3666 F 3665 F / XPADB *
+  3664 F 3666 F A 1808 A F 2 HEXN C XSEP B
+:XPADB
+  32 W 32 W
+:XSEP
+  3666 F 1 P XNOSP J
+  32 W
+:XNOSP
+  3666 PSTO XHEX B
+:XASC
+  32 W 0 3666 T
+:XA
+  3666 F 3665 F / XAEND *
+  3664 F 3666 F A 1808 A F
+  D 32 L XDOT *
+  D 126 G XDOT *
+  W XANX B
+:XDOT
+  ! 46 W
+:XANX
+  3666 PSTO XA B
+:XAEND
+  CR
+  3663 F 3665 F A 3663 T
+  3664 F 16 A 3664 T XROW B
+:XEOF
+  !
+:XDONE
+  3618 F FCLOSE C
+:XDRET
+  R
+
+# =====================================================================
+#  crc32 FILE...   (IEEE 802.3, same as zlib / python zlib.crc32)
+# =====================================================================
+
+:C_CRC
+  PREP C 3544 F MISSING J
+  CRCF 3553 T FOREACH C R
+:CRCF
+  OPENREG C CRRET J
+  4294967295 3667 T 0 3668 T
+:CRBLK
+  3618 F BREAD C D CREOF J 3669 T
+  3669 F 3668 MADD
+  0 3670 T
+:CRBY
+  3670 F 3669 F / CRBLK *
+  3670 F 1808 A F 3667 F X 3667 T
+  8 3671 T
+:CRBIT
+  3667 F 1 P CRODD *
+  3667 F 1 > 3667 T CRBN B
+:CRODD
+  3667 F 1 > 3988292384 X 3667 T
+:CRBN
+  3671 F - D 3671 T CRBIT *
+  3670 PSTO CRBY B
+:CREOF
+  ! 3618 F FCLOSE C
+  3667 F 4294967295 X 8 HEXN C "  " 3668 F 10 PADNUM C "  " 608 PUTS C CR
+:CRRET
+  R
+
+# =====================================================================
+#  find [PATH...] [-name PAT] [-iname PAT] [-type f|d|l]
+# =====================================================================
+
+:C_FIND
+  0 3672 T 0 3673 T 0 3674 T 0 3675 T 1 3547 T
+:FDPATHS
+  3547 F 3536 F / FDRUN *
+  3547 F 544 A F F 45 E FDOPTS *
+  3672 F 31 / FDPSKIP *
+  3547 F 544 A F 3672 F 576 A T 3672 PSTO
+:FDPSKIP
+  3547 PSTO FDPATHS B
+:FDOPTS
+  3547 F 3536 F / FDRUN *
+  3547 F 544 A F
+  D 3873 STREQ C FDNAME *
+  D 3879 STREQ C FDINAME *
+  D 3886 STREQ C FDTYPE *
+  EPRE C "unknown expression '" PUTS C "' (use -name -iname -type)" EEND C R
+:FDNAME
+  ! FDARG C FDBAD J 2832 128 STRNCPY C 1 3674 T 0 3675 T FDOPTS B
+:FDINAME
+  ! FDARG C FDBAD J 2832 128 STRNCPY C 1 3674 T 1 3675 T 2832 LOWERBUF C FDOPTS B
+:FDTYPE
+  ! FDARG C FDBAD J F
+  D 102 E FDTF *
+  D 100 E FDTD *
+  D 108 E FDTL *
+  ! EPRE C "-type needs f, d or l" EEND C R
+:FDTF
+  ! 1 3673 T FDOPTS B
+:FDTD
+  ! 2 3673 T FDOPTS B
+:FDTL
+  ! 3 3673 T FDOPTS B
+:FDARG                     # ( -- str ok)  the word after an option
+  3547 PSTO 3547 F 3536 F / FDANO *
+  3547 F 544 A F 3547 PSTO 1 R
+:FDANO
+  0 0 R
+:FDBAD
+  ! EPRE C "missing argument after option" EEND C R
+:FDRUN
+  3672 F FDHAVE *
+  3845 576 T 1 3672 T
+:FDHAVE
+  0 3676 T
+:FDLP
+  3676 F 3672 F / FDEND *
+  3676 F 576 A F 608 600 STRNCPY C
+  608 0 STATP C FDERR J
+  3471 F 3525 T FTEST C
+  3471 F 2 E FDWALK *
+  FDNX B
+:FDWALK
+  0 3559 T 1 3560 T 0 3562 T
+  FWPRE 3564 T FTEST 3563 T NOOP 3565 T
+  WALK C
+  FDNX B
+:FDERR
+  608 4134 F EFAIL C
+:FDNX
+  3676 PSTO FDLP B
+:FDEND
+  R
+:FWPRE
+  FTEST C 1 R
+:FTEST                     # print PA when it passes -type and -name
+  3673 F FTNAME J
+  3525 F 3673 F = FTRET *
+:FTNAME
+  3674 F FTPRINT J
+  3675 F FTCI *
+  2832 608 BASENAME C WMATCH C FTRET J
+:FTPRINT
+  608 PUTS C CR
+:FTRET
+  R
+:FTCI
+  608 BASENAME C 2576 256 STRNCPY C 2576 LOWERBUF C
+  2832 2576 WMATCH C FTRET J
+  FTPRINT B
+
+# =====================================================================
+#  tree [-a] [DIR]
+# =====================================================================
+
+:C_TREE
+  PREP C 97 OPT C 3560 T
+  3544 F TRHAVE *
+  3845 608 600 STRNCPY C TRGO0 B
+:TRHAVE
+  576 F 608 600 STRNCPY C 608 STRIPSL C
+:TRGO0
+  608 1 STATP C TRERR J
+  3471 F 3525 T 3472 F 3526 T
+  608 NAMECOL C CR
+  3471 F 2 E TRGO *
+  R
+:TRGO
+  0 3677 T 0 3678 T 0 3559 T 0 3562 T
+  TRPRE 3564 T TRFILE 3563 T NOOP 3565 T
+  WALK C
+  CR 3677 F Y 3677 F 1 E TRD1 *
+  " directories, " TRF B
+:TRD1
+  " directory, "
+:TRF
+  3678 F Y 3678 F 1 E TRF1 *
+  " files" CR R
+:TRF1
+  " file" CR R
+:TRERR
+  608 4134 F EFAIL C R
+:TRPRE
+  TRLINE C 3677 PSTO 1 R
+:TRFILE
+  TRLINE C 3678 PSTO R
+:TRLINE
+  0 3679 T
+:TLLP
+  3679 F 3559 F / TLCONN *
+  3679 F 7 M 3120 A D 2 A F SWAP 5 A F E TLSP *
+  3896 PUTS C TLNX B
+:TLSP
+  3925 PUTS C
+:TLNX
+  3679 PSTO TLLP B
+:TLCONN
+  3561 F TLLAST *
+  3903 PUTS C TLNAME B
+:TLLAST
+  3914 PUTS C
+:TLNAME
+  2320 NAMECOL C
+  3525 F 3 E TLLNK *
+  CR R
+:TLLNK
+  " -> " 608 4129 T 2576 4130 T 256 4131 T 28 SYS C TLNL J
+  2576 PUTS C
+:TLNL
+  CR R
+
+# =====================================================================
+#  du [-s] [-h] [PATH...]   (apparent sizes in bytes)
+# =====================================================================
+
+:C_DU
+  PREP C 115 OPT C 3680 T 104 OPT C 3681 T
+  3544 F DUHAVE *
+  3845 608 600 STRNCPY C DUF C R
+:DUHAVE
+  DUF 3553 T FOREACH C R
+:DUF
+  608 0 STATP C DUERR J
+  3471 F 2 E DUDIR *
+  3470 F 608 DUPRINT C R
+:DUDIR
+  0 3682 T
+  0 3559 T 1 3560 T 0 3562 T
+  DUPRE 3564 T DUFILE 3563 T DUPOST 3565 T
+  WALK C
+  6 FR C F 3682 F A 608 DUPRINT C R
+:DUERR
+  608 4134 F EFAIL C R
+:DUPRE                     # directories count as 0 bytes, like GNU du --apparent-size
+  1 R
+:DUFILE
+  3566 F 6 FR C MADD R
+:DUPOST
+  3559 F + 7 M 6 A 3120 A F
+  D 6 FR C MADD
+  3680 F DUPQ *
+  608 DUPRINT C R
+:DUPQ
+  ! R
+:DUPRINT                   # (size path --)
+  3683 T
+  3681 F DUPH *
+  Y DUPT B
+:DUPH
+  0 HUMAN C
+:DUPT
+  9 W 3683 F PUTS C CR R
+
+# =====================================================================
+#  df [PATH]
+# =====================================================================
+
+:C_DF
+  PREP C
+  3544 F DFHAVE *
+  3845 608 600 STRNCPY C DFGO2 B
+:DFHAVE
+  576 F 608 600 STRNCPY C
+:DFGO2
+  608 4129 T 26 SYS C DFOK *
+  608 4134 F EFAIL C R
+:DFOK
+  4134 F 3684 T 4135 F 3685 T 4136 F 3686 T
+  3684 F 3685 F S 3687 T
+  "     Size      Used     Avail  Use%  Path" CR
+  3684 F 9 HUMAN C 32 W 3687 F 9 HUMAN C 32 W 3686 F 9 HUMAN C 32 W
+  3687 F 3686 F A D DFZERO J
+  3687 F 100 M OVER A - SWAP V 4 PADNUM C "%  " 608 PUTS C CR R
+:DFZERO
+  ! "   -  " 608 PUTS C CR R
+
+# =====================================================================
+#  help
+# =====================================================================
+
+:C_HELP
+  CYEL C "GATC SAK - swiss army knife (all tools written in GATC assembly)" CRST C CR CR
+  CBLU C "browse   " CRST C "ls [-l -a -h -d] [path...]   ll   cd [dir]   pwd   tree [-a] [dir]" CR
+  "         find [path...] [-name PAT] [-iname PAT] [-type f|d|l]" CR
+  "         stat file...   realpath path...   du [-s -h] [path...]   df [path]" CR
+  CBLU C "files    " CRST C "cp [-r -v] src... dest   mv [-v] src... dest   rm [-r -f -v] path..." CR
+  "         touch file...   mkdir [-p -v] dir...   rmdir dir...   ln [-s] target [link]" CR
+  "         chmod 755|u+x,go-w file..." CR
+  CBLU C "text     " CRST C "cat [-n] file...   cat > file  (type lines, end with a line holding only .)" CR
+  "         head [-n N] file...   tail [-n N] file...   wc [-l -w -c] file..." CR
+  "         grep [-i -n -v -c -l -r] TEXT file...   echo [-n] words" CR
+  CBLU C "bytes    " CRST C "xxd [-n LEN] file...   hexdump   crc32 file..." CR
+  CBLU C "other    " CRST C "date   whoami   clear   help   exit [code]" CR CR
+  "Wildcards * and ? work in the last part of a path:  rm *.tmp   cp src/*.aa backup/" CR
+  "Quotes and \\ escape spaces:  cat \"my file.txt\"   Redirect output:  ls -l > list.txt  >> appends" CR
+  R
