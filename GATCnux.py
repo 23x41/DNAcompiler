@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Optional
 import os, zlib, collections
 import socket, ssl, struct, time, ipaddress, re
-VERSION = "4.2.0-fs"
+VERSION = "4.3.0-tty"
 BANNER = r"""
   ____    _  _____ ____  __ _  _
  / ___|  / \|_   _/ ___|/ /| || |
@@ -856,7 +856,7 @@ class NetKit:
         return (1, int(m.group(1)) if m else 0, 0)
 
 # ---------------------------------------------------------------------------------------
-# filesystem bridge for sak.aa  (opt-in: run with --fs)
+# filesystem bridge for shell.aa  (opt-in: run with --fs)
 #
 # The VM has no file-system opcodes.  Exactly like the --net bridge, a program STOREs a
 # command number into a control cell and the host performs ONE small syscall-like step
@@ -1121,6 +1121,178 @@ class FSKit:
     def c28(self, a1, a2, a3, a4):    # readlink
         return (self.put(a2, a3, os.fsencode(os.readlink(self.jail(self.cs(a1), follow=False)))),)
 
+# ---------------------------------------------------------------------------------------
+# terminal bridge for paint.aa  (opt-in: run with --tty)
+#
+# GETC waits for Enter and the VM cannot see the mouse.  With --tty the program can put the
+# terminal in raw mode and read single keys (arrows and mouse decoded) and write raw bytes
+# (UTF-8, colour escapes) in one call.  Drawing logic stays in the .aa program.
+# Control cells 4144..4153:
+#   4144 command  4145-4147 arguments  4148 status  4149-4152 results  4153 magic (TTY_MAGIC on, 1 = off)
+# Commands:
+#   1 raw(on)            enter (1) or leave (0) raw keyboard mode (no echo, no Enter needed)
+#   2 key(timeout_ms)    0 = wait.  status 0 = no key (timeout) or end of input (r1 = 1 at EOF)
+#                        r1 = code: a character's code point, Enter 10, Tab 9, Backspace 8, Esc 27,
+#                        arrows 1001 up 1002 down 1003 right 1004 left, 1005 Home 1006 End,
+#                        1007 PgUp 1008 PgDn 1009 Delete, mouse 2000 press/drag 2001 release
+#                        2002 wheel up 2003 wheel down (r2 = column, r3 = row, 1-based,
+#                        r4 = button 0 left 1 middle 2 right, +32 while dragging)
+#   3 write(addr, n)     raw bytes (one per cell) to stdout
+#   4 size()             r1 = columns, r2 = rows
+#   5 sleep(ms)
+#   6 ticks()            r1 = milliseconds since start
+# ---------------------------------------------------------------------------------------
+TTY_MAGIC = 18516
+CTL_TCMD, CTL_TA1, CTL_TA2, CTL_TA3, CTL_TSTATUS, CTL_TR1, CTL_TR2, CTL_TR3, CTL_TR4, CTL_TMAGIC = range(4144, 4154)
+
+class TTYKit:
+    def __init__(self, vm):
+        self.vm = vm; self.mem = vm.mem
+        self.fd = None; self.saved = None; self.raw = False; self.pending = b""
+        self.t0 = time.time(); self.eof = False; self.touched = False
+        try: self.fd = sys.stdin.fileno()
+        except (AttributeError, ValueError, OSError): self.fd = None
+        self.is_tty = False
+        try: self.is_tty = self.fd is not None and os.isatty(self.fd)
+        except OSError: pass
+        self.win = os.name == "nt"
+
+    def command(self, cmd, a1, a2, a3):
+        try:
+            f = getattr(self, "c%d" % cmd, None)
+            if f is None: return (0, 22, 0, 0, 0)
+            r = f(a1, a2, a3)
+            if r is None: return (0, 0, 0, 0, 0)
+            return (1,) + tuple(r) + (0,) * (4 - len(r))
+        except OSError as e:
+            return (0, e.errno or 5, 0, 0, 0)
+
+    # ---- raw mode
+    def c1(self, a1, a2, a3):
+        if a1: self.enter_raw()
+        else: self.leave_raw()
+        return ()
+    def enter_raw(self):
+        self.touched = True
+        if self.raw or not self.is_tty or self.win: self.raw = True; return
+        import termios, tty
+        self.saved = termios.tcgetattr(self.fd)
+        tty.setcbreak(self.fd)
+        attrs = termios.tcgetattr(self.fd); attrs[3] &= ~termios.ECHO
+        termios.tcsetattr(self.fd, termios.TCSADRAIN, attrs)
+        self.raw = True
+    def leave_raw(self):
+        if self.saved is not None:
+            import termios
+            try: termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+            except (OSError, termios.error): pass
+            self.saved = None
+        self.raw = False
+    def close(self):
+        if self.touched:   # leave mouse reporting / alternate screen even after a crash
+            self.out(b"\x1b[0m\x1b[?1002l\x1b[?1006l\x1b[?25h\x1b[?1049l")
+        self.leave_raw()
+
+    # ---- input
+    def readbyte(self, timeout):
+        """one byte or None on timeout; b'' at end of input.  timeout None = wait"""
+        if self.pending:
+            b, self.pending = self.pending[:1], self.pending[1:]; return b
+        if self.fd is None:
+            s = self.vm.stdin.read(1); return s.encode("utf-8") if s else b""
+        if self.win and self.is_tty:
+            import msvcrt
+            end = None if timeout is None else time.time() + timeout
+            while not msvcrt.kbhit():
+                if end is not None and time.time() >= end: return None
+                time.sleep(0.01)
+            ch = msvcrt.getwch()
+            if ch in ("\x00", "\xe0"):
+                k = msvcrt.getwch()
+                seq = {"H": b"\x1b[A", "P": b"\x1b[B", "M": b"\x1b[C", "K": b"\x1b[D", "G": b"\x1b[H",
+                       "O": b"\x1b[F", "I": b"\x1b[5~", "Q": b"\x1b[6~", "S": b"\x1b[3~"}.get(k, b"")
+                if not seq: return None
+                self.pending = seq[1:]; return seq[:1]
+            if ch == "\r": ch = "\n"
+            data = ch.encode("utf-8"); self.pending = data[1:]; return data[:1]
+        import select
+        r, _, _ = select.select([self.fd], [], [], timeout)
+        if not r: return None
+        return os.read(self.fd, 1)
+    def c2(self, a1, a2, a3):
+        if self.eof: raise EOFError_()
+        try: sys.stdout.flush(); self.vm.stdout.flush()
+        except (OSError, ValueError): pass
+        b = self.readbyte(None if a1 <= 0 else a1 / 1000.0)
+        if b is None: return None
+        if b == b"":
+            self.eof = True; raise EOFError_()
+        return self.decode(b)
+    def decode(self, b):
+        c = b[0]
+        if c == 27:
+            nxt = self.readbyte(0.05)
+            if not nxt: return (27,)
+            if nxt == b"[" or nxt == b"O":
+                seq = b""
+                while True:
+                    x = self.readbyte(0.05)
+                    if not x: break
+                    seq += x
+                    if 0x40 <= x[0] <= 0x7E and not (nxt == b"[" and seq[:1] == b"<" and x in b"0123456789;"): break
+                return self.csi(seq)
+            self.pending = nxt + self.pending; return (27,)
+        if c in (13, 10): return (10,)
+        if c in (127, 8): return (8,)
+        if c >= 0x80:   # UTF-8 sequence -> code point
+            n = 2 if c >= 0xC0 else 1
+            if c >= 0xE0: n = 3
+            if c >= 0xF0: n = 4
+            data = b
+            for _ in range(n - 1):
+                x = self.readbyte(0.05)
+                if not x: break
+                data += x
+            try: return (ord(data.decode("utf-8")),)
+            except (UnicodeDecodeError, TypeError): return (0xFFFD,)
+        return (c,)
+    def csi(self, seq):
+        keys = {b"A": 1001, b"B": 1002, b"C": 1003, b"D": 1004, b"H": 1005, b"F": 1006,
+                b"1~": 1005, b"7~": 1005, b"4~": 1006, b"8~": 1006, b"5~": 1007, b"6~": 1008, b"3~": 1009}
+        if seq[:1] == b"<" and seq[-1:] in (b"M", b"m"):       # SGR mouse
+            try: btn, col, row = (int(v) for v in seq[1:-1].split(b";"))
+            except ValueError: return (0,)
+            if btn & 64: return (2002 if (btn & 1) == 0 else 2003, col, row, 0)
+            code = 2001 if seq[-1:] == b"m" else 2000
+            return (code, col, row, (btn & 3) | (32 if btn & 32 else 0))
+        final = seq[-1:]
+        if final in (b"A", b"B", b"C", b"D", b"H", b"F"): return (keys[final],)
+        return (keys.get(seq.split(b";")[0][-2:] if b"~" in seq else seq, 0),)
+
+    # ---- output
+    def out(self, data):
+        try:
+            self.vm.stdout.flush()
+            buf = getattr(self.vm.stdout, "buffer", None)
+            if buf is None: self.vm.stdout.write(data.decode("utf-8", "replace"))
+            else: buf.write(data); buf.flush()
+        except (OSError, ValueError): pass
+    def c3(self, a1, a2, a3):
+        if not (0 <= a2 <= 65536 and 0 <= a1 and a1 + a2 <= len(self.mem)): raise OSError(14, "bad buffer")
+        self.out(bytes(self.mem[a1 + i] & 0xFF for i in range(a2)))
+        return (a2,)
+    def c4(self, a1, a2, a3):
+        try:
+            import shutil; s = shutil.get_terminal_size((80, 24)); return (s.columns, s.lines)
+        except (OSError, ValueError): return (80, 24)
+    def c5(self, a1, a2, a3):
+        time.sleep(max(0, min(a1, 10000)) / 1000.0); return ()
+    def c6(self, a1, a2, a3):
+        return (int((time.time() - self.t0) * 1000),)
+
+class EOFError_(Exception):
+    pass
+
 class VM:
     def __init__(self, program, genome=False, stdin=None, stdout=None):
         self.program=program; self.pc=0; self.stack=[]; self.calls=[]; self.mem=[0]*MEM_SIZE
@@ -1129,6 +1301,7 @@ class VM:
         self.file=bytearray(); self.filepath=None; self.savepath=None; self.dirty=0
         self.ctl={k:0 for k in range(CTL_A1,CTL_LOST+1)}; self.ctl.update({k:0 for k in range(CTL_NA1,CTL_NR2+1)}); self.net=None
         self.ctl.update({k:0 for k in range(CTL_FA1,CTL_FR4+1)}); self.fs=None
+        self.ctl.update({k:0 for k in range(CTL_TA1,CTL_TR4+1)}); self.tty=None
         self.groups=collections.deque(); self.u_total=0; self.u_suspend=0
     def load_file(self, path, addr=0):
         try:
@@ -1171,6 +1344,7 @@ class VM:
         if addr == CTL_MAGIC: return 51966
         if addr == CTL_NMAGIC: return NET_MAGIC if self.net is not None else 1   # 1 = supported but off (no --net)
         if addr == CTL_FMAGIC: return FS_MAGIC if self.fs is not None else 1     # 1 = supported but off (no --fs)
+        if addr == CTL_TMAGIC: return TTY_MAGIC if self.tty is not None else 1   # 1 = supported but off (no --tty)
         return self.ctl.get(addr, 0)
     def store(self, addr, val):
         if 0 <= addr < len(self.mem): self.mem[addr] = val; return
@@ -1190,10 +1364,20 @@ class VM:
         if addr == CTL_NCMD: self.net_command(val); return
         if addr in (CTL_NA1, CTL_NA2, CTL_NA3, CTL_NA4): self.ctl[addr] = val; return
         if addr == CTL_FCMD: self.fs_command(val); return
+        if addr == CTL_TCMD: self.tty_command(val); return
+        if addr in (CTL_TA1, CTL_TA2, CTL_TA3): self.ctl[addr] = val; return
         if addr in (CTL_FA1, CTL_FA2, CTL_FA3, CTL_FA4): self.ctl[addr] = val; return
         warn(f"store out of bounds {addr}")
     def enable_net(self):
         self.net = NetKit(self.stdout, self.mem)
+    def enable_tty(self):
+        self.tty = TTYKit(self)
+    def tty_command(self, cmd):
+        c = self.ctl
+        if self.tty is None: c[CTL_TSTATUS] = 0; c[CTL_TR1] = 1; return
+        try: r = self.tty.command(cmd, c[CTL_TA1], c[CTL_TA2], c[CTL_TA3])
+        except EOFError_: r = (0, 1, 0, 0, 0)
+        c[CTL_TSTATUS], c[CTL_TR1], c[CTL_TR2], c[CTL_TR3], c[CTL_TR4] = r
     def enable_fs(self, root=None):
         self.fs = FSKit(self, root)
     def fs_command(self, cmd):
@@ -1530,14 +1714,16 @@ def main(argv=None):
     p.add_argument("--file", help="open FILE (up to 1 GiB) in the file-backed address space used by hexeditor.aa")
     p.add_argument("--net", action="store_true", help="allow the program to use the network (ping, dig, whois, TCP/TLS) - needed by netkit.aa")
     p.add_argument("--save", help="where the editor's w command writes (default: the --file path, in place)")
-    p.add_argument("--fs", action="store_true", help="allow the program to use the file system (ls, cp, mv, rm, ...) - needed by sak.aa")
+    p.add_argument("--fs", action="store_true", help="allow the program to use the file system (ls, cp, mv, rm, ...) - needed by shell.aa")
+    p.add_argument("--tty", action="store_true", help="raw keyboard, mouse and fast screen output for the program - needed by paint.aa")
     p.add_argument("--fs-root", metavar="DIR", help="with --fs: start in DIR and refuse paths outside it (best-effort jail)")
     args=p.parse_intermixed_args(argv)
     if args.command=="help" and not args.source:
         print(BANNER); p.print_help()
         print("\n  python3 GATCloader.py run program.aa --no-banner")
-        print("  python3 GATCloader.py run netkit.aa --no-banner --net --max-steps 500000000")
-        print("  python3 GATCloader.py run sak.aa --no-banner --fs --max-steps 2000000000")
+        print("  python3 GATCnux.py run netkit.aa --no-banner --net --max-steps 500000000")
+        print("  python3 GATCnux.py run shell.aa --no-banner --fs --max-steps 2000000000")
+        print("  python3 GATCnux.py run paint.aa --no-banner --tty --fs --max-steps 2000000000")
         print("  python3 GATCload.py run hex.aa --no-banner --load /etc/passwd")
         print("  python3 GATCload.py compile program.aa --dna -o program.dna")
         return 0
@@ -1578,6 +1764,8 @@ def main(argv=None):
             vm.enable_net()
         if args.fs or args.fs_root:
             vm.enable_fs(args.fs_root)
+        if args.tty:
+            vm.enable_tty()
         try:
             return vm.run(max_steps=args.max_steps)
         except BrokenPipeError:            # e.g. piped into head: stop quietly
@@ -1587,6 +1775,7 @@ def main(argv=None):
         finally:
             if vm.net is not None: vm.net.close()
             if vm.fs is not None: vm.fs.close_all()
+            if vm.tty is not None: vm.tty.close()
     except GATCError as e:
         warn(str(e)); return 1
 if __name__=="__main__":
