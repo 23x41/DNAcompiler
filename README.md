@@ -1,4 +1,6 @@
 
+python3 GATCnux.py run paint.aa --no-banner --tty --fs --max-steps 2000000000
+
 python3 GATCnux.py run shell.aa --no-banner --fs --max-steps 2000000000
 
 python3 GATC46.py compile newops.aa --dna -o program.dna
