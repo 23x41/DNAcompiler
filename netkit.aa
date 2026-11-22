@@ -1,0 +1,722 @@
+# =====================================================================
+# netkit.aa  --  GATC NETKIT: a network swiss army knife for GATCloader.py
+#
+#   python3 GATCloader.py run netkit.aa --no-banner --net --max-steps 2000000000
+#
+# Tools: ping, dig, whois, nc (TCP/TLS client), listen (nc -l), http (HEAD + TLS
+# certificate info), tcp (port check), resolve, rev (reverse lookup).
+# Needs --net: the VM has no socket opcodes, so the loader does the network work
+# and this program is the menu and the line editor on top of it.
+# Control cells 4112..4120:
+#   4112 command   4113-4116 arguments   4117 status   4118/4119 results   4120 magic
+# VM cells used here:
+#   0..255 input line   256..383 384..511 512..639 argument strings
+#   640..1151 send buffer   1152..1215 variables   1216.. command names
+#   1450.. command word   1580.. port list
+# Generated from netkit.tpl by gen_net.py -- addresses are assigned automatically.
+# No negative literals are used (bytecode/DNA decoding reads immediates unsigned).
+# =====================================================================
+
+MAIN B
+
+# ---------------------------------------------------------------------
+#  line reader (UTF-8 encodes non-ASCII input), tokens, numbers
+# ---------------------------------------------------------------------
+
+:PUTLB                     # (b --)  append a byte to the line buffer (max 255)
+  1152 F 255 / PLCUT *
+  1152 F 0 A T
+  1152 PSTO R
+:PLCUT
+  ! 1 1153 T R
+
+:UTF8                      # (c --)  c >= 128: append its UTF-8 bytes
+  D 2048 L U8TWO *
+  D 65536 L U8THREE *
+  D 18 > 240 O PUTLB C
+  D 12 > 63 P 128 O PUTLB C
+  D 6 > 63 P 128 O PUTLB C
+  63 P 128 O PUTLB C R
+:U8THREE
+  D 12 > 224 O PUTLB C
+  D 6 > 63 P 128 O PUTLB C
+  63 P 128 O PUTLB C R
+:U8TWO
+  D 6 > 192 O PUTLB C
+  63 P 128 O PUTLB C R
+
+:READLINE                  # ( -- eof )   read one line into LINE, NUL-terminated
+  0 1152 T
+  0 1153 T
+:RLLOOP
+  ?
+  D 0 L RLEOF *            # EOF (getc returns a negative number)
+  D 10 E RLEOL *
+  D 13 E RLDROP *
+  D 0 E RLDROP *
+  D 128 L RLPUT *
+  UTF8 C
+  RLLOOP B
+:RLPUT
+  PUTLB C
+  RLLOOP B
+:RLDROP
+  ! RLLOOP B
+:RLEOL
+  ! RLFIN B
+:RLEOF
+  !
+  1152 F RLFIN *            # last line without a newline: use it, EOF comes next time
+  1 R
+:RLFIN
+  0 1152 F 0 A T
+  0 1154 T
+  1153 F RLWARN *
+  0 R
+:RLWARN
+  "(line truncated to 255 bytes)" CR
+  0 R
+
+:ASKLINE                   # the prompt is already printed: read a fresh line (EOF ends the program)
+  READLINE C ASKEOF *
+  R
+:ASKEOF
+  CR H
+
+:PEEKC                     # ( -- c )   current char of the line (0 at end)
+  1154 F 0 A F R
+
+:SKIPWS
+  PEEKC C 32 E SWADV *
+  PEEKC C 9 E SWADV *
+  R
+:SWADV
+  1154 PSTO
+  SKIPWS B
+
+:HAVEARG                   # ( -- flag )   is there another word on the line?
+  SKIPWS C
+  PEEKC C 32 G R
+
+# GETTOK: next word -> dest (NUL terminated, max 127 bytes).  Returns its length; tl = 1 if it was too long.
+:GETTOK                    # (dest -- len)
+  1155 T
+  0 1156 T
+  0 1157 T
+  SKIPWS C
+:GTLOOP
+  PEEKC C 33 L GTEND *
+  1156 F 127 / GTCUT *
+  PEEKC C 1156 F 1155 F A T
+  1156 PSTO
+  1154 PSTO
+  GTLOOP B
+:GTCUT
+  1 1157 T
+  1154 PSTO
+  GTLOOP B
+:GTEND
+  0 1156 F 1155 F A T
+  1156 F R
+
+# DECARG: next word as a decimal number (empty -> default).  nbad = 1 if malformed.
+# A '-' directly after the digits is allowed (port ranges).
+:DECARG                    # (default -- v)
+  1158 T
+  0 1159 T
+  0 1160 T
+  0 1161 T
+  SKIPWS C
+  PEEKC C 33 L DAEMPTY *
+:DALOOP
+  PEEKC C
+  D 48 L DAEND *
+  D 57 G DAEND *
+  48 S
+  1161 F 10 M A 1161 T
+  1160 PSTO
+  1161 F 99999999 G DABIG *
+  1154 PSTO
+  DALOOP B
+:DAEND
+  !
+  1160 F DABAD J
+  PEEKC C D 33 L DAOK *
+  D 45 E DAOK *
+  !
+:DABAD
+  1 1159 T
+  1158 F R
+:DABIG
+  1 1159 T
+  1158 F R
+:DAOK
+  !
+  1161 F R
+:DAEMPTY
+  1158 F R
+
+:LOWER                     # (c -- c')
+  D 65 L LWRX *
+  D 90 G LWRX *
+  32 O
+:LWRX
+  R
+
+:LOWERW                    # lower-case the word at CMDW
+  0 1162 T
+:LWLOOP
+  1162 F 1450 A F D LWDONE J
+  LOWER C 1162 F 1450 A T
+  1162 PSTO
+  LWLOOP B
+:LWDONE
+  ! R
+
+:MATCH                     # (name -- flag)  is the word at CMDW a prefix of the name?
+  1163 T
+  0 1164 T
+:MLOOP
+  1164 F 1450 A F D MEND J
+  1164 F 1163 F A F E MNEXT *
+  0 R
+:MNEXT
+  1164 PSTO
+  MLOOP B
+:MEND
+  ! 1 R
+
+:CLRSTK
+  , CLRMORE *
+  R
+:CLRMORE
+  ! CLRSTK B
+
+# ---------------------------------------------------------------------
+#  shared error exits (always reached by a jump, never a call)
+# ---------------------------------------------------------------------
+
+:BADNUM
+  "error: that is not a valid number" CR
+  LOOP B
+:TOOLONG
+  "error: argument too long (127 characters max)" CR
+  LOOP B
+
+# ---------------------------------------------------------------------
+#  tools
+# ---------------------------------------------------------------------
+
+# ping host [count] [timeout-ms]
+:TPING
+  HAVEARG C ZA1 *
+  "host: " ASKLINE C
+:ZA1
+  256 GETTOK C
+  1157 F TOOLONG *
+  LOOP J
+  1165 F ZM2 *
+  "count [4]: " ASKLINE C
+:ZM2
+  4 DECARG C
+  1159 F BADNUM *
+  1166 T
+  1165 F ZM3 *
+  "timeout in ms [2000]: " ASKLINE C
+:ZM3
+  2000 DECARG C
+  1159 F BADNUM *
+  1167 T
+  256 4113 T
+  1166 F 4114 T
+  1167 F 4115 T
+  4 4112 T 4117 F !
+  LOOP B
+
+# dig name [type] [@server[#port]]
+:TDIG
+  HAVEARG C ZA4 *
+  "name: " ASKLINE C
+:ZA4
+  256 GETTOK C
+  1157 F TOOLONG *
+  LOOP J
+  1165 F ZO5 *
+  "type [A] (A AAAA MX NS TXT SOA CNAME PTR SRV CAA DS DNSKEY ANY ...): " ASKLINE C
+:ZO5
+  384 GETTOK C
+  1157 F TOOLONG *
+  !
+  1165 F ZO6 *
+  "server [system resolver] (e.g. @1.1.1.1 or @8.8.8.8#53): " ASKLINE C
+:ZO6
+  512 GETTOK C
+  1157 F TOOLONG *
+  !
+  256 4113 T
+  384 4114 T
+  512 4115 T
+  2 4112 T 4117 F !
+  LOOP B
+
+# whois domain|ip [server]
+:TWHOIS
+  HAVEARG C ZA7 *
+  "domain or IP: " ASKLINE C
+:ZA7
+  256 GETTOK C
+  1157 F TOOLONG *
+  LOOP J
+  1165 F ZO8 *
+  "whois server [automatic]: " ASKLINE C
+:ZO8
+  384 GETTOK C
+  1157 F TOOLONG *
+  !
+  256 4113 T
+  384 4114 T
+  3 4112 T 4117 F !
+  LOOP B
+
+# resolve host
+:TRESOLVE
+  HAVEARG C ZA9 *
+  "host: " ASKLINE C
+:ZA9
+  256 GETTOK C
+  1157 F TOOLONG *
+  LOOP J
+  256 4113 T
+  1 4112 T 4117 F !
+  LOOP B
+
+# rev ip [@server]
+:TREV
+  HAVEARG C ZA10 *
+  "IP address: " ASKLINE C
+:ZA10
+  256 GETTOK C
+  1157 F TOOLONG *
+  LOOP J
+  1165 F ZO11 *
+  "server [system resolver]: " ASKLINE C
+:ZO11
+  384 GETTOK C
+  1157 F TOOLONG *
+  !
+  256 4113 T
+  384 4114 T
+  12 4112 T 4117 F !
+  LOOP B
+
+# http url   (HEAD request, shows the status line, headers and the TLS certificate)
+:THTTP
+  HAVEARG C ZA12 *
+  "url (http://... or https://...): " ASKLINE C
+:ZA12
+  256 GETTOK C
+  1157 F TOOLONG *
+  LOOP J
+  256 4113 T
+  10 4112 T 4117 F !
+  LOOP B
+
+# tcp host port|lo-hi ...    (up to 16 ports)
+:TTCP
+  HAVEARG C ZA13 *
+  "host: " ASKLINE C
+:ZA13
+  256 GETTOK C
+  1157 F TOOLONG *
+  LOOP J
+  HAVEARG C TPGO *
+  "port(s), e.g. 22 80 443 or 8000-8005: " ASKLINE C
+:TPGO
+  0 1168 T
+:TPLOOP
+  HAVEARG C TPPARSE *
+  1168 F TPRUN *
+  LOOP B                   # no ports given: cancel
+:TPPARSE
+  0 DECARG C 1169 T
+  1159 F BADNUM *
+  1169 F 1170 T
+  PEEKC C 45 = TPSPAN *
+  1154 PSTO
+  0 DECARG C 1170 T
+  1159 F BADNUM *
+  1170 F 1169 F L TPBADR *
+:TPSPAN
+  1169 F 1171 T
+:TPADD
+  1168 F 16 / TPMANY *
+  1171 F 1168 F 1580 A T
+  1168 PSTO
+  1171 F 1170 F / TPNEXT *
+  1171 PSTO
+  TPADD B
+:TPNEXT
+  TPLOOP B
+:TPBADR
+  "error: bad port range" CR
+  LOOP B
+:TPMANY
+  "error: at most 16 ports at a time" CR
+  LOOP B
+:TPRUN
+  0 1172 T
+:TPRL
+  1172 F 1168 F / TPEND *
+  256 4113 T
+  1172 F 1580 A F 4114 T
+  3 4115 T
+  11 4112 T 4117 F !
+  1172 PSTO
+  TPRL B
+:TPEND
+  LOOP B
+
+# nc host port [tls]
+:TNC
+  HAVEARG C ZA14 *
+  "host: " ASKLINE C
+:ZA14
+  256 GETTOK C
+  1157 F TOOLONG *
+  LOOP J
+  HAVEARG C ZN15 *
+  "port: " ASKLINE C
+:ZN15
+  0 DECARG C
+  1159 F BADNUM *
+  D ZV15 *
+  LOOP B
+:ZV15
+  1173 T
+  1165 F ZO16 *
+  "tls? (type tls, or Enter for plain TCP): " ASKLINE C
+:ZO16
+  1450 GETTOK C
+  1157 F TOOLONG *
+  !
+  LOWERW C
+  0 1174 T
+  1450 F TNCGO J         # empty word -> plain
+  1372 MATCH C TNCTLS *
+  1384 MATCH C TNCTLS *
+  "error: the only option is tls" CR
+  LOOP B
+:TNCTLS
+  1 1174 T
+:TNCGO
+  256 4113 T
+  1173 F 4114 T
+  8 4115 T
+  1174 F 4116 T
+  5 4112 T 4117 F SESS *
+  LOOP B
+
+# listen port [bind] [seconds]
+:TLISTEN
+  HAVEARG C ZN17 *
+  "port to listen on: " ASKLINE C
+:ZN17
+  0 DECARG C
+  1159 F BADNUM *
+  D ZV17 *
+  LOOP B
+:ZV17
+  1173 T
+  1165 F ZO18 *
+  "bind address [127.0.0.1] (0.0.0.0 = all interfaces): " ASKLINE C
+:ZO18
+  256 GETTOK C
+  1157 F TOOLONG *
+  !
+  1165 F ZM19 *
+  "seconds to wait for a connection [60]: " ASKLINE C
+:ZM19
+  60 DECARG C
+  1159 F BADNUM *
+  1175 T
+  1173 F 4113 T
+  1175 F 4114 T
+  256 4115 T
+  9 4112 T 4117 F SESS *
+  LOOP B
+
+# ---------------------------------------------------------------------
+#  interactive session (shared by nc and listen)
+# ---------------------------------------------------------------------
+
+:SESS
+  "type a line + Enter to send it.  .r read more  .c toggle CRLF  .q close  .h help" CR
+  1 1176 T
+  "line ends: CRLF" CR
+  1000 4113 T
+  3000 4114 T
+  7 4112 T 4117 F !
+  4119 F SCLOSED *
+:SLOOP
+  "nc> "
+  READLINE C SEOF *
+  0 F 46 = SSEND *            # not '.' : send the line
+  0 1 A F LOWER C 1177 T
+  1177 F 97 L SSEND *                # '.' not followed by a letter : send literally
+  1177 F 122 G SSEND *
+  1450 GETTOK C !
+  1157 F SDUNK *
+  LOWERW C
+  1396 MATCH C SDQUIT *
+  1408 MATCH C SDREAD *
+  1420 MATCH C SDCRLF *
+  1432 MATCH C SDHELP *
+:SDUNK
+  "unknown . command - .h for help" CR
+  SLOOP B
+:SDQUIT
+  8 4112 T 4117 F !
+  "connection closed" CR
+  LOOP B
+:SDREAD
+  2000 4113 T
+  10000 4114 T
+  7 4112 T 4117 F !
+  4119 F SCLOSED *
+  4118 F SLOOP *
+  "(no data received)" CR
+  SLOOP B
+:SDCRLF
+  1 1176 F S 1176 T
+  "line ends: " 1176 F SDCRON *
+  "LF" CR
+  SLOOP B
+:SDCRON
+  "CRLF" CR
+  SLOOP B
+:SDHELP
+  "  any line   send it (a line starting with .letter needs a space in front)" CR
+  "  .r         wait up to 10 s for more data" CR
+  "  .c         toggle CRLF / LF line ends" CR
+  "  .q         close the connection and go back to the menu" CR
+  "  Ctrl-D     close and exit" CR
+  SLOOP B
+
+:SSEND
+  0 1178 T
+:SSCP
+  1178 F 1152 F / SSEND2 *
+  1178 F 0 A F 1178 F 640 A T
+  1178 PSTO
+  SSCP B
+:SSEND2
+  1176 F SSCR *
+  SSLF B
+:SSCR
+  13 1178 F 640 A T
+  1178 PSTO
+:SSLF
+  10 1178 F 640 A T
+  1178 PSTO
+  640 4113 T
+  1178 F 4114 T
+  6 4112 T 4117 F SSOK *
+  LOOP B                   # the loader said why; the connection is gone
+:SSOK
+  700 4113 T
+  4000 4114 T
+  7 4112 T 4117 F !
+  4119 F SCLOSED *
+  SLOOP B
+
+:SCLOSED
+  "connection closed by the remote host" CR
+  LOOP B
+:SEOF
+  CR
+  8 4112 T 4117 F !
+  H
+
+# ---------------------------------------------------------------------
+#  menu / help
+# ---------------------------------------------------------------------
+
+:CHELP
+  "  1  ping     ping <host> [count] [timeout-ms]" CR
+  "  2  dig      dig <name> [type] [@server[#port]]    e.g. dig example.com MX @1.1.1.1" CR
+  "  3  whois    whois <domain|ip> [server]" CR
+  "  4  nc       nc <host> <port> [tls]                TCP/TLS client, line oriented" CR
+  "  5  listen   listen <port> [bind] [seconds]        wait for one connection (nc -l)" CR
+  "  6  http     http <url>                            HEAD request + TLS certificate" CR
+  "  7  tcp      tcp <host> <port|lo-hi> ...           open/closed check, 16 ports max" CR
+  "  8  resolve  resolve <host>                        A/AAAA addresses" CR
+  "  9  rev      rev <ip> [@server]                    reverse (PTR) lookup" CR
+  "  ?  help     q = quit" CR
+  "pick a number or a name (abbreviations work: p, d, w, n, l, h, t, r).  With no" CR
+  "arguments the tool asks for each one; an empty answer cancels." CR
+  LOOP B
+
+# ---------------------------------------------------------------------
+#  main
+# ---------------------------------------------------------------------
+
+:MAIN
+  112 1216 T
+  105 1217 T
+  110 1218 T
+  103 1219 T
+  0 1220 T
+  100 1228 T
+  105 1229 T
+  103 1230 T
+  0 1231 T
+  119 1240 T
+  104 1241 T
+  111 1242 T
+  105 1243 T
+  115 1244 T
+  0 1245 T
+  110 1252 T
+  99 1253 T
+  0 1254 T
+  108 1264 T
+  105 1265 T
+  115 1266 T
+  116 1267 T
+  101 1268 T
+  110 1269 T
+  0 1270 T
+  104 1276 T
+  101 1277 T
+  108 1278 T
+  112 1279 T
+  0 1280 T
+  104 1288 T
+  116 1289 T
+  116 1290 T
+  112 1291 T
+  0 1292 T
+  116 1300 T
+  99 1301 T
+  112 1302 T
+  0 1303 T
+  114 1312 T
+  101 1313 T
+  115 1314 T
+  111 1315 T
+  108 1316 T
+  118 1317 T
+  101 1318 T
+  0 1319 T
+  114 1324 T
+  101 1325 T
+  118 1326 T
+  0 1327 T
+  109 1336 T
+  101 1337 T
+  110 1338 T
+  117 1339 T
+  0 1340 T
+  113 1348 T
+  117 1349 T
+  105 1350 T
+  116 1351 T
+  0 1352 T
+  101 1360 T
+  120 1361 T
+  105 1362 T
+  116 1363 T
+  0 1364 T
+  116 1372 T
+  108 1373 T
+  115 1374 T
+  0 1375 T
+  115 1384 T
+  115 1385 T
+  108 1386 T
+  0 1387 T
+  46 1396 T
+  113 1397 T
+  117 1398 T
+  105 1399 T
+  116 1400 T
+  0 1401 T
+  46 1408 T
+  114 1409 T
+  101 1410 T
+  97 1411 T
+  100 1412 T
+  0 1413 T
+  46 1420 T
+  99 1421 T
+  114 1422 T
+  108 1423 T
+  102 1424 T
+  0 1425 T
+  46 1432 T
+  104 1433 T
+  101 1434 T
+  108 1435 T
+  112 1436 T
+  0 1437 T
+  4120 F 20037 = NONET *
+  "GATC NETKIT - network swiss army knife" CR
+  CHELP C
+  LOOP B
+
+:NONET
+  "network support is off: use the netkit GATCloader.py and add --net" CR
+  H
+
+:LOOP
+  CLRSTK C
+:PROMPT
+  "netkit> "
+  READLINE C QUITEOF *
+  SKIPWS C
+  PEEKC C 32 G DISP *
+  PROMPT B
+:DISP
+  1450 GETTOK C !
+  1157 F UNKNOWN *
+  LOWERW C
+  HAVEARG C 1165 T
+  1450 F 1179 T
+  1450 1 A F 1180 T
+  1180 F NOTNUM *
+  1179 F 49 E TPING *
+  1179 F 50 E TDIG *
+  1179 F 51 E TWHOIS *
+  1179 F 52 E TNC *
+  1179 F 53 E TLISTEN *
+  1179 F 54 E THTTP *
+  1179 F 55 E TTCP *
+  1179 F 56 E TRESOLVE *
+  1179 F 57 E TREV *
+  1179 F 48 E BYE *
+  1179 F 63 E CHELP *
+:NOTNUM
+  1276 MATCH C CHELP *
+  1336 MATCH C CHELP *
+  1216 MATCH C TPING *
+  1228 MATCH C TDIG *
+  1240 MATCH C TWHOIS *
+  1252 MATCH C TNC *
+  1264 MATCH C TLISTEN *
+  1288 MATCH C THTTP *
+  1300 MATCH C TTCP *
+  1312 MATCH C TRESOLVE *
+  1324 MATCH C TREV *
+  1348 MATCH C BYE *
+  1360 MATCH C BYE *
+:UNKNOWN
+  "unknown tool - ? for the menu" CR
+  LOOP B
+
+:BYE
+  "bye" CR
+  H
+
+:QUITEOF
+  CR
+  H
