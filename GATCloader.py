@@ -8,7 +8,8 @@ import argparse, random, sys
 from dataclasses import dataclass
 from typing import Optional
 import os, zlib, collections
-VERSION = "4.0.0-load"
+import socket, ssl, struct, time, ipaddress, re
+VERSION = "4.1.0-net"
 BANNER = r"""
   ____    _  _____ ____  __ _  _
  / ___|  / \|_   _/ ___|/ /| || |
@@ -16,7 +17,7 @@ BANNER = r"""
 | |_| |/ ___ \| || |__/ /  |__   _|
  \____/_/   \_\_| \____/      |_|
   64 opcodes. 64 codons. One each.
-  Version 4 + --load. Real FASTA runs anyway.
+  Version 4 + --load/--file/--net. Real FASTA runs anyway.
 """
 OPDEF = [
  ("A","ADD",0x01,False,"(a b -- a+b)"),("B","JMP",0x02,False,"(addr --)"),
@@ -298,13 +299,569 @@ def translate_coding_sequence(text):
     return ("FORCED " if forced else "")+" ".join(out)
 def disasm(program):
     return "\n".join(f"{pc:04d}: {ins.name:<6} {ins.imm}" if ins.imm is not None else f"{pc:04d}: {ins.name}" for pc,ins in enumerate(program))
+# ---------------------------------------------------------------------------------------
+# networking for netkit.aa  (opt-in: run with --net)
+#
+# The VM has no network opcodes.  Like the file-backed editor, a program STOREs a command
+# number into a control cell; the host does the work (DNS, whois, ICMP, TCP/TLS) and prints
+# its output straight to stdout.  Strings are passed as the address of a NUL-terminated
+# string in VM memory.  Everything has a timeout; nothing runs unless --net is given.
+# ---------------------------------------------------------------------------------------
+NET_MAGIC = 20037
+CTL_NCMD, CTL_NA1, CTL_NA2, CTL_NA3, CTL_NA4, CTL_NSTATUS, CTL_NR1, CTL_NR2, CTL_NMAGIC = range(4112, 4121)
+IANA_WHOIS = "whois.iana.org"
+WHOIS_ALLOW_PRIVATE = False        # automatic whois referrals may only point at public hosts
+MAX_PRINT = 256 * 1024
+QTYPES = {"A": 1, "NS": 2, "CNAME": 5, "SOA": 6, "PTR": 12, "MX": 15, "TXT": 16, "AAAA": 28, "SRV": 33,
+          "NAPTR": 35, "DS": 43, "DNSKEY": 48, "TLSA": 52, "CAA": 257, "ANY": 255}
+QNAMES = {v: k for k, v in QTYPES.items()}
+RCODES = ["NOERROR", "FORMERR", "SERVFAIL", "NXDOMAIN", "NOTIMP", "REFUSED", "YXDOMAIN", "YXRRSET",
+          "NXRRSET", "NOTAUTH", "NOTZONE"]
+
+def _esc_bytes(b):
+    return "".join(chr(c) if 32 <= c < 127 and chr(c) not in '"\\' else "\\%03d" % c for c in b)
+
+def _dns_encode_name(name):
+    name = name.rstrip(".")
+    if not name: return b"\0"
+    out = b""
+    for lab in name.split("."):
+        if not lab: raise ValueError("empty label in name")
+        try: b = lab.encode("ascii")
+        except UnicodeEncodeError: b = lab.encode("idna")
+        if len(b) > 63: raise ValueError("label longer than 63 bytes")
+        out += bytes([len(b)]) + b
+    if len(out) + 1 > 255: raise ValueError("name longer than 253 bytes")
+    return out + b"\0"
+
+def _dns_decode_name(msg, off):
+    labels, end, hops = [], None, 0
+    while True:
+        if off >= len(msg): raise ValueError("truncated name")
+        n = msg[off]
+        if n == 0:
+            off += 1; break
+        if n & 0xC0 == 0xC0:
+            if off + 1 >= len(msg): raise ValueError("truncated pointer")
+            ptr = ((n & 0x3F) << 8) | msg[off + 1]
+            if end is None: end = off + 2
+            hops += 1
+            if hops > 64 or ptr >= len(msg): raise ValueError("bad compression pointer")
+            off = ptr; continue
+        if n & 0xC0: raise ValueError("bad label type")
+        off += 1
+        if off + n > len(msg): raise ValueError("truncated label")
+        labels.append(msg[off:off + n]); off += n
+        if sum(len(l) + 1 for l in labels) > 255: raise ValueError("name too long")
+    if end is None: end = off
+    return ".".join(_esc_bytes(l).replace(".", "\\.") for l in labels) + ".", end
+
+def _dns_rdata(msg, rtype, off, rdlen):
+    end = off + rdlen; raw = msg[off:end]
+    if rtype == 1 and rdlen == 4: return socket.inet_ntoa(raw)
+    if rtype == 28 and rdlen == 16: return str(ipaddress.IPv6Address(raw))
+    if rtype in (2, 5, 12): return _dns_decode_name(msg, off)[0]
+    if rtype == 15 and rdlen >= 3:
+        return "%d %s" % (struct.unpack(">H", raw[:2])[0], _dns_decode_name(msg, off + 2)[0])
+    if rtype == 16:
+        parts, i = [], 0
+        while i < rdlen:
+            n = raw[i]; parts.append('"' + _esc_bytes(raw[i + 1:i + 1 + n]) + '"'); i += 1 + n
+        return " ".join(parts)
+    if rtype == 6:
+        m, o = _dns_decode_name(msg, off); r, o = _dns_decode_name(msg, o)
+        return "%s %s %d %d %d %d %d" % ((m, r) + struct.unpack(">IIIII", msg[o:o + 20]))
+    if rtype == 33 and rdlen >= 7:
+        p, w, port = struct.unpack(">HHH", raw[:6]); return "%d %d %d %s" % (p, w, port, _dns_decode_name(msg, off + 6)[0])
+    if rtype == 257 and rdlen >= 2:
+        fl, tl = raw[0], raw[1]; return '%d %s "%s"' % (fl, _esc_bytes(raw[2:2 + tl]), _esc_bytes(raw[2 + tl:]))
+    return "\\# %d %s" % (rdlen, raw.hex())
+
+def _icmp_checksum(b):
+    if len(b) % 2: b += b"\0"
+    s = sum(struct.unpack(">%dH" % (len(b) // 2), b))
+    s = (s >> 16) + (s & 0xFFFF); s += s >> 16
+    return (~s) & 0xFFFF
+
+class NetKit:
+    def __init__(self, out, mem):
+        self.out = out; self.mem = mem; self.sock = None
+
+    # ------------------------------------------------------------ helpers
+    def w(self, s):
+        self.out.write(s); self.out.flush()
+    @staticmethod
+    def clean(text):
+        """remote text is untrusted: no terminal escape sequences or other control characters"""
+        return re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", ".", text.replace("\r", ""))
+    def cs(self, addr, maxlen=255):
+        if not (0 <= addr < len(self.mem)): return ""
+        chars = []
+        for i in range(maxlen):
+            if addr + i >= len(self.mem): break
+            v = self.mem[addr + i]
+            if v == 0: break
+            chars.append(chr(v) if 0 < v < 0x110000 else "?")
+        return "".join(c for c in "".join(chars) if c.isprintable()).strip()
+    @staticmethod
+    def okhost(h):
+        h = h.strip("[]")
+        return 1 <= len(h) <= 253 and all(c.isalnum() or c in "._:%-" for c in h)
+    @staticmethod
+    def hostnorm(h):
+        return h.strip("[]")
+    def close(self):
+        if self.sock is not None:
+            try: self.sock.close()
+            except OSError: pass
+            self.sock = None
+
+    def command(self, cmd, a1, a2, a3, a4):
+        """returns (status, r1, r2)"""
+        try:
+            if cmd == 1: return self.c_resolve(self.cs(a1))
+            if cmd == 2: return self.c_dig(self.cs(a1), self.cs(a2), self.cs(a3))
+            if cmd == 3: return self.c_whois(self.cs(a1), self.cs(a2))
+            if cmd == 4: return self.c_ping(self.cs(a1), a2, a3)
+            if cmd == 5: return self.c_connect(self.cs(a1), a2, a3, a4)
+            if cmd == 6: return self.c_send(a1, a2)
+            if cmd == 7: return self.c_recv(a1, a2)
+            if cmd == 8: self.close(); return (1, 0, 0)
+            if cmd == 9: return self.c_listen(a1, a2, self.cs(a3))
+            if cmd == 10: return self.c_http(self.cs(a1))
+            if cmd == 11: return self.c_portcheck(self.cs(a1), a2, a3)
+            if cmd == 12: return self.c_rdns(self.cs(a1), self.cs(a2))
+            self.w("net: unknown command %s\n" % cmd); return (0, 0, 0)
+        except KeyboardInterrupt:
+            self.w("\n^C interrupted\n"); return (0, 0, 0)
+        except Exception as e:
+            self.w("error: %s: %s\n" % (type(e).__name__, e)); return (0, 0, 0)
+
+    # ------------------------------------------------------------ resolve
+    def c_resolve(self, name):
+        if not self.okhost(name): self.w("error: that is not a valid host name\n"); return (0, 0, 0)
+        name = self.hostnorm(name)
+        try: infos = socket.getaddrinfo(name, None, 0, socket.SOCK_STREAM)
+        except socket.gaierror as e:
+            self.w("%s: cannot resolve (%s)\n" % (name, e.strerror or e)); return (0, 0, 0)
+        seen = []
+        for fam, _, _, _, sa in infos:
+            ip = sa[0].split("%")[0]
+            if ip not in seen: seen.append(ip)
+        self.w("%s:\n" % name)
+        for ip in seen: self.w("  %s  (%s)\n" % (ip, "IPv6" if ":" in ip else "IPv4"))
+        return (1, len(seen), 0)
+
+    # ------------------------------------------------------------ dig
+    def _resolver(self, server):
+        port = 53
+        if server:
+            server = server.lstrip("@")
+            if "#" in server: server, p = server.rsplit("#", 1); port = int(p)
+            elif server.count(":") == 1 and not server.startswith("["): server, p = server.rsplit(":", 1); port = int(p)
+            server = server.strip("[]")
+            if not 1 <= port <= 65535: raise ValueError("bad server port")
+        else:
+            server = None
+            try:
+                for line in open("/etc/resolv.conf"):
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[0] == "nameserver": server = parts[1].split("%")[0]; break
+            except OSError: pass
+            server = server or "1.1.1.1"
+        if not self.okhost(server): raise ValueError("bad server name")
+        info = socket.getaddrinfo(server, port, 0, socket.SOCK_DGRAM)[0]
+        return info[0], info[4]
+
+    def _dns_udp(self, af, addr, query, qid, timeout=3.0, tries=2):
+        for _ in range(tries):
+            s = socket.socket(af, socket.SOCK_DGRAM)
+            deadline = time.time() + timeout
+            try:
+                s.sendto(query, addr)
+                while True:
+                    left = deadline - time.time()
+                    if left <= 0: break
+                    s.settimeout(left)
+                    try: data, src = s.recvfrom(65535)
+                    except (socket.timeout, TimeoutError): break
+                    if src[0].split("%")[0] != addr[0].split("%")[0]: continue
+                    if len(data) >= 12 and struct.unpack(">H", data[:2])[0] == qid: return data
+            finally: s.close()
+        raise TimeoutError("no reply from %s (timed out)" % addr[0])
+
+    def _dns_tcp(self, af, addr, query, qid, timeout=5.0):
+        s = socket.socket(af, socket.SOCK_STREAM); s.settimeout(timeout)
+        try:
+            s.connect(addr); s.sendall(struct.pack(">H", len(query)) + query)
+            def rd(n):
+                b = b""
+                while len(b) < n:
+                    c = s.recv(n - len(b))
+                    if not c: raise ConnectionError("connection closed by server")
+                    b += c
+                return b
+            ln = struct.unpack(">H", rd(2))[0]; data = rd(ln)
+            if len(data) < 12 or struct.unpack(">H", data[:2])[0] != qid: raise ValueError("reply id mismatch")
+            return data
+        finally: s.close()
+
+    def c_dig(self, name, qtype, server):
+        if qtype.startswith("@") and not server: server, qtype = qtype, ""
+        qtype = (qtype or "A").upper()
+        if qtype not in QTYPES: self.w("error: unknown record type %r (try %s)\n" % (qtype, " ".join(QTYPES))); return (0, 0, 0)
+        if not name or " " in name: self.w("error: a name is required\n"); return (0, 0, 0)
+        if qtype == "PTR":
+            try: name = ipaddress.ip_address(name.strip("[]")).reverse_pointer + "."
+            except ValueError: pass
+        try:
+            qname = _dns_encode_name(name); af, addr = self._resolver(server)
+        except (ValueError, socket.gaierror) as e:
+            self.w("error: %s\n" % e); return (0, 0, 0)
+        qid = random.randrange(1, 65536)
+        opt = b"\0" + struct.pack(">HHIH", 41, 1232, 0, 0)          # EDNS0, 1232-byte UDP payload
+        query = struct.pack(">HHHHHH", qid, 0x0100, 1, 0, 0, 1) + qname + struct.pack(">HH", QTYPES[qtype], 1) + opt
+        t0 = time.time(); via = "UDP"
+        try:
+            data = self._dns_udp(af, addr, query, qid)
+            if data[2] & 0x02:
+                self.w(";; Truncated, retrying in TCP mode.\n"); data = self._dns_tcp(af, addr, query, qid); via = "TCP"
+        except (TimeoutError, OSError, ValueError) as e:
+            self.w(";; connection error: %s\n" % e); return (0, 0, 0)
+        ms = int((time.time() - t0) * 1000)
+        try: self._dig_print(data, name, qtype, server, addr, ms, via)
+        except (ValueError, struct.error, IndexError):
+            self.w(";; error: malformed DNS reply (%d bytes)\n" % len(data)); return (0, 0, 0)
+        return (1, data[3] & 0x0F, 0)
+
+    def c_rdns(self, ip, server):
+        try: ipaddress.ip_address(ip.strip("[]"))
+        except ValueError: self.w("error: %r is not an IP address (use dig for names)\n" % ip); return (0, 0, 0)
+        return self.c_dig(ip, "PTR", server)
+
+    def _dig_print(self, msg, name, qtype, server, addr, ms, via):
+        qid, flags, qd, an, ns, ar = struct.unpack(">HHHHHH", msg[:12])
+        off, qs = 12, []
+        for _ in range(qd):
+            qn, off = _dns_decode_name(msg, off); qt, qc = struct.unpack(">HH", msg[off:off + 4]); off += 4; qs.append((qn, qt, qc))
+        secs = []
+        for count in (an, ns, ar):
+            recs = []
+            for _ in range(count):
+                rn, off = _dns_decode_name(msg, off)
+                rt, rc, ttl, rl = struct.unpack(">HHIH", msg[off:off + 10]); off += 10
+                if off + rl > len(msg): raise ValueError("truncated record")
+                recs.append((rn, ttl, rc, rt, _dns_rdata(msg, rt, off, rl))); off += rl
+            secs.append(recs)
+        rcode = flags & 0x0F
+        fl = " ".join(n for bit, n in ((0x8000, "qr"), (0x0400, "aa"), (0x0200, "tc"), (0x0100, "rd"), (0x0080, "ra"), (0x0020, "ad"), (0x0010, "cd")) if flags & bit)
+        self.w("; <<>> GATC dig <<>> %s %s%s\n" % (name, qtype, (" @" + server.lstrip("@")) if server else ""))
+        self.w(";; ->>HEADER<<- opcode: QUERY, status: %s, id: %d\n" % (RCODES[rcode] if rcode < len(RCODES) else "RCODE%d" % rcode, qid))
+        self.w(";; flags: %s; QUERY: %d, ANSWER: %d, AUTHORITY: %d, ADDITIONAL: %d\n" % (fl, qd, an, ns, ar))
+        cname = lambda c: "IN" if c == 1 else "CLASS%d" % c
+        tname = lambda t: QNAMES.get(t, "TYPE%d" % t)
+        self.w("\n;; QUESTION SECTION:\n")
+        for qn, qt, qc in qs: self.w(";%s\t\t%s\t%s\n" % (qn, cname(qc), tname(qt)))
+        for title, recs in zip(("ANSWER", "AUTHORITY", "ADDITIONAL"), secs):
+            recs = [r for r in recs if r[3] != 41]
+            if recs:
+                self.w("\n;; %s SECTION:\n" % title)
+                for rn, ttl, rc, rt, rd in recs: self.w("%s\t\t%d\t%s\t%s\t%s\n" % (rn, ttl, cname(rc), tname(rt), rd))
+        self.w("\n;; Query time: %d msec\n;; SERVER: %s#%d (%s)\n;; MSG SIZE  rcvd: %d\n" % (ms, addr[0].split("%")[0], addr[1], via, len(msg)))
+
+    # ------------------------------------------------------------ whois
+    @staticmethod
+    def _split_server(s, default_port=43):
+        if s.count(":") == 1 and not s.startswith("["):
+            h, p = s.rsplit(":", 1)
+            if p.isdigit(): return h, int(p)
+        return s.strip("[]"), default_port
+    def _public(self, host):
+        if WHOIS_ALLOW_PRIVATE: return True
+        try:
+            for info in socket.getaddrinfo(host, 43, 0, socket.SOCK_STREAM):
+                if not ipaddress.ip_address(info[4][0].split("%")[0]).is_global: return False
+            return True
+        except (socket.gaierror, ValueError): return False
+    def _whois_fetch(self, server, query, timeout=10.0):
+        host, port = self._split_server(server)
+        s = socket.create_connection((host, port), timeout)
+        try:
+            s.sendall((query + "\r\n").encode("utf-8", "replace"))
+            data, deadline = b"", time.time() + 20
+            while len(data) < 512 * 1024:
+                left = deadline - time.time()
+                if left <= 0: break
+                s.settimeout(left)
+                try: chunk = s.recv(65536)
+                except (socket.timeout, TimeoutError): break
+                if not chunk: break
+                data += chunk
+        finally: s.close()
+        return data.decode("utf-8", "replace")
+    @staticmethod
+    def _whois_fmt(server, q):
+        sv = server.lower().split(":")[0]
+        if sv.endswith("verisign-grs.com"): return "domain " + q
+        if sv == "whois.arin.net":
+            try: ipaddress.ip_address(q); return "n + " + q
+            except ValueError: pass
+        return q
+    @staticmethod
+    def _refer(text, keys):
+        for key in keys:
+            m = re.search(r"^\s*%s\s*:\s*(\S+)" % key, text, re.I | re.M)
+            if m:
+                h = m.group(1).strip().lower().rstrip(".")
+                h = re.sub(r"^[a-z]+://", "", h).split("/")[0]
+                if re.fullmatch(r"[a-z0-9.-]{3,253}", h): return h
+        return None
+    def c_whois(self, query, server):
+        if not query or any(c.isspace() for c in query): self.w("error: give one domain, IP address or AS number\n"); return (0, 0, 0)
+        out, path = "", []
+        try:
+            if server:
+                path = [server]; out = self._whois_fetch(server, self._whois_fmt(server, query))
+            else:
+                path = [IANA_WHOIS]; out = self._whois_fetch(IANA_WHOIS, query)
+                nxt = self._refer(out, ("refer", "whois"))
+                for hop in range(2):
+                    if not nxt or nxt in path: break
+                    if not self._public(nxt):
+                        self.w("# refusing to follow a referral to a non-public host (%s)\n" % nxt); break
+                    got = self._whois_fetch(nxt, self._whois_fmt(nxt, query)); path.append(nxt)
+                    if got.strip(): out = got
+                    nxt = self._refer(got, ("Registrar WHOIS Server",)) if hop == 0 else None
+        except (OSError, socket.gaierror, ValueError) as e:
+            self.w("whois: %s: %s\n" % (path[-1] if path else "?", e)); return (0, 0, 0)
+        lines = self.clean(out).splitlines()
+        self.w("# whois: %s\n" % " -> ".join(path))
+        for ln in lines[:300]: self.w(ln + "\n")
+        if len(lines) > 300: self.w("# ... %d more lines not shown\n" % (len(lines) - 300))
+        if not out.strip(): self.w("# (empty reply)\n"); return (0, 0, 0)
+        return (1, len(lines), 0)
+
+    # ------------------------------------------------------------ ping
+    def _icmp_socket(self, fam):
+        proto = socket.IPPROTO_ICMP if fam == socket.AF_INET else socket.IPPROTO_ICMPV6
+        for typ, kind in ((socket.SOCK_DGRAM, "dgram"), (socket.SOCK_RAW, "raw")):
+            try: return socket.socket(fam, typ, proto), kind
+            except (OSError, AttributeError): continue
+        return None, None
+    def c_ping(self, host, count, tmo_ms):
+        if not self.okhost(host): self.w("error: that is not a valid host name\n"); return (0, 0, 0)
+        host = self.hostnorm(host)
+        count = max(1, min(count if count > 0 else 4, 100)); tmo = max(200, min(tmo_ms if tmo_ms > 0 else 2000, 10000)) / 1000.0
+        try: infos = socket.getaddrinfo(host, None, 0, socket.SOCK_STREAM)
+        except socket.gaierror as e: self.w("ping: %s: cannot resolve (%s)\n" % (host, e.strerror or e)); return (0, 0, 0)
+        infos.sort(key=lambda i: i[0] != socket.AF_INET)
+        fam, _, _, _, sa = infos[0]; ip = sa[0].split("%")[0]; v4 = fam == socket.AF_INET
+        sock, kind = self._icmp_socket(fam)
+        if sock is None: return self._tcp_ping(host, ip, count, tmo)
+        self.w("PING %s (%s): 56 data bytes\n" % (host, ip))
+        ident, rtts, sent = os.getpid() & 0xFFFF, [], 0
+        want = 0 if v4 else 129
+        try:
+            for seq in range(1, count + 1):
+                payload = struct.pack(">d", time.time()) + bytes(range(48))
+                hdr = struct.pack(">BBHHH", 8 if v4 else 128, 0, 0, ident, seq)
+                pkt = hdr + payload
+                if v4: pkt = struct.pack(">BBHHH", 8, 0, _icmp_checksum(hdr + payload), ident, seq) + payload
+                t0 = time.time(); sent += 1
+                try: sock.sendto(pkt, sa)
+                except OSError as e: self.w("ping: send failed: %s\n" % e); break
+                deadline = t0 + tmo; got = False
+                while True:
+                    left = deadline - time.time()
+                    if left <= 0: break
+                    sock.settimeout(left)
+                    try: data, src = sock.recvfrom(2048)
+                    except (socket.timeout, TimeoutError): break
+                    ttl = None
+                    if v4 and data and data[0] >> 4 == 4:
+                        ihl = (data[0] & 0x0F) * 4; ttl = data[8]; data = data[ihl:]
+                    if len(data) < 8: continue
+                    typ, _, _, rid, rseq = struct.unpack(">BBHHH", data[:8])
+                    if typ != want or rseq != seq or (kind == "raw" and rid != ident): continue
+                    rtt = (time.time() - t0) * 1000; rtts.append(rtt); got = True
+                    self.w("%d bytes from %s: icmp_seq=%d%s time=%.2f ms\n" % (len(data), ip, seq, (" ttl=%d" % ttl) if ttl else "", rtt))
+                    break
+                if not got: self.w("Request timeout for icmp_seq %d\n" % seq)
+                if seq < count:
+                    rest = 1.0 - (time.time() - t0)
+                    if rest > 0: time.sleep(rest)
+        finally: sock.close()
+        return self._ping_summary(host, sent, rtts)
+    def _ping_summary(self, host, sent, rtts):
+        loss = 100.0 * (sent - len(rtts)) / sent if sent else 100.0
+        self.w("\n--- %s ping statistics ---\n%d packets transmitted, %d received, %.0f%% packet loss\n" % (host, sent, len(rtts), loss))
+        if rtts:
+            avg = sum(rtts) / len(rtts); md = (sum((r - avg) ** 2 for r in rtts) / len(rtts)) ** 0.5
+            self.w("rtt min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n" % (min(rtts), avg, max(rtts), md))
+        return (1 if rtts else 0, len(rtts), sent)
+    def _tcp_ping(self, host, ip, count, tmo):
+        self.w("PING %s (%s): ICMP is not permitted here, using TCP connects instead\n" % (host, ip))
+        port, rtts, sent = 443, [], 0
+        for seq in range(1, count + 1):
+            sent += 1; t0 = time.time(); res = None
+            for attempt in range(2):
+                try:
+                    s = socket.create_connection((ip, port), tmo); s.close(); res = "open"
+                except ConnectionRefusedError: res = "refused"
+                except OSError: res = None
+                if res or port == 80: break
+                port = 80
+            if res:
+                rtt = (time.time() - t0) * 1000; rtts.append(rtt)
+                self.w("tcp %s:%d seq=%d %s time=%.2f ms\n" % (ip, port, seq, res, rtt))
+            else: self.w("tcp %s:%d seq=%d no response\n" % (ip, port, seq))
+            if seq < count: time.sleep(max(0, 1.0 - (time.time() - t0)))
+        return self._ping_summary(host, sent, rtts)
+
+    # ------------------------------------------------------------ tcp client / server (nc)
+    def _tls_info(self, ss):
+        info = "%s %s" % (ss.version(), (ss.cipher() or ("?",))[0])
+        try:
+            cert = ss.getpeercert(); subj = dict(x[0] for x in cert.get("subject", ())); iss = dict(x[0] for x in cert.get("issuer", ()))
+            left = (ssl.cert_time_to_seconds(cert["notAfter"]) - time.time()) / 86400.0
+            return info, "cert: %s  issuer: %s  expires in %d days" % (subj.get("commonName", "?"), iss.get("organizationName") or iss.get("commonName", "?"), left)
+        except Exception: return info, None
+    def _open(self, host, port, timeout, tls):
+        """returns (socket, connect_ms, ip, tls_info) or raises"""
+        last = None
+        for fam, typ, proto, _, sa in socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM):
+            s = socket.socket(fam, typ, proto); s.settimeout(timeout); t0 = time.time()
+            try:
+                s.connect(sa); ms = (time.time() - t0) * 1000
+                if tls:
+                    s = ssl.create_default_context().wrap_socket(s, server_hostname=host)
+                return s, ms, sa[0].split("%")[0]
+            except (OSError, ssl.SSLError) as e:
+                last = e
+                try: s.close()
+                except OSError: pass
+        raise last
+    def _why(self, e, host):
+        if isinstance(e, socket.gaierror): return "cannot resolve %s (%s)" % (host, e.strerror or e)
+        if isinstance(e, ssl.SSLCertVerificationError): return "TLS certificate check failed: %s" % (e.verify_message or e)
+        if isinstance(e, ssl.SSLError): return "TLS error: %s" % e
+        if isinstance(e, (socket.timeout, TimeoutError)): return "timed out"
+        if isinstance(e, ConnectionRefusedError): return "connection refused"
+        return e.strerror or str(e)
+    def c_connect(self, host, port, tmo, tls):
+        self.close()
+        if not self.okhost(host): self.w("error: that is not a valid host name\n"); return (0, 0, 0)
+        if not 1 <= port <= 65535: self.w("error: port must be 1-65535\n"); return (0, 0, 0)
+        host = self.hostnorm(host); tmo = max(1, min(tmo or 5, 60))
+        try: s, ms, ip = self._open(host, port, tmo, bool(tls))
+        except (OSError, ssl.SSLError) as e: self.w("connect to %s port %d failed: %s\n" % (host, port, self._why(e, host))); return (0, 0, 0)
+        self.sock = s
+        self.w("connected to %s (%s) port %d in %.0f ms\n" % (host, ip, port, ms))
+        if tls:
+            info, cert = self._tls_info(s); self.w("tls: %s\n" % info)
+            if cert: self.w("%s\n" % cert)
+        return (1, int(ms), 0)
+    def c_send(self, addr, n):
+        if self.sock is None: self.w("error: not connected\n"); return (0, 0, 0)
+        if not (0 <= n <= 4096 and 0 <= addr and addr + n <= len(self.mem)): self.w("error: bad send buffer\n"); return (0, 0, 0)
+        try: self.sock.settimeout(10); self.sock.sendall(bytes(self.mem[addr + i] & 0xFF for i in range(n)))
+        except (OSError, ssl.SSLError) as e:
+            self.w("send failed: %s\n" % self._why(e, "")); self.close(); return (0, 0, 0)
+        return (1, n, 0)
+    def c_recv(self, idle_ms, total_ms):
+        if self.sock is None: self.w("error: not connected\n"); return (0, 0, 1)
+        idle = max(0.05, min(idle_ms or 1500, 60000) / 1000.0); total = max(idle, min(total_ms or 5000, 300000) / 1000.0)
+        deadline, data, closed = time.time() + total, b"", 0
+        while len(data) < MAX_PRINT:
+            left = min(idle, deadline - time.time())
+            if left <= 0: break
+            self.sock.settimeout(left)
+            try: chunk = self.sock.recv(65536)
+            except (socket.timeout, TimeoutError): break
+            except ssl.SSLWantReadError: continue
+            except (OSError, ssl.SSLError): closed = 1; break
+            if not chunk: closed = 1; break
+            data += chunk
+        if data:
+            text = self.clean(data.decode("utf-8", "replace"))
+            self.w(text if text.endswith("\n") else text + "\n")
+        if closed: self.close()
+        return (1 if data else 0, len(data), closed)
+    def c_listen(self, port, tmo, bind):
+        self.close()
+        bind = bind or "127.0.0.1"
+        if not self.okhost(bind): self.w("error: bad bind address\n"); return (0, 0, 0)
+        if not 1 <= port <= 65535: self.w("error: port must be 1-65535\n"); return (0, 0, 0)
+        tmo = max(1, min(tmo or 60, 3600)); bind = self.hostnorm(bind)
+        try:
+            fam = socket.getaddrinfo(bind, port, 0, socket.SOCK_STREAM, 0, socket.AI_PASSIVE)[0]
+            srv = socket.socket(fam[0], socket.SOCK_STREAM); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(fam[4]); srv.listen(1); srv.settimeout(tmo)
+        except (OSError, socket.gaierror) as e:
+            self.w("listen on %s port %d failed: %s\n" % (bind, port, self._why(e, bind))); return (0, 0, 0)
+        self.w("listening on %s port %d (waits %d s, Ctrl-C cancels)\n" % (bind, port, tmo))
+        try: conn, peer = srv.accept()
+        except (socket.timeout, TimeoutError): self.w("no connection received (timed out)\n"); return (0, 0, 0)
+        finally: srv.close()
+        self.sock = conn; self.w("connection from %s port %d\n" % (peer[0].split("%")[0], peer[1]))
+        return (1, 0, 0)
+    def c_portcheck(self, host, port, tmo):
+        if not self.okhost(host): self.w("error: that is not a valid host name\n"); return (0, 0, 0)
+        if not 1 <= port <= 65535: self.w("port %d: bad port number\n" % port); return (0, 0, 0)
+        host = self.hostnorm(host); tmo = max(1, min(tmo or 3, 30))
+        try: s, ms, ip = self._open(host, port, tmo, False); s.close()
+        except socket.gaierror as e: self.w("%s: cannot resolve (%s)\n" % (host, e.strerror or e)); return (0, 0, 0)
+        except (socket.timeout, TimeoutError): self.w("%s %d/tcp: no response (timed out - filtered or host down)\n" % (host, port)); return (0, 0, 0)
+        except ConnectionRefusedError: self.w("%s %d/tcp: closed (connection refused)\n" % (host, port)); return (0, 0, 0)
+        except OSError as e: self.w("%s %d/tcp: %s\n" % (host, port, e.strerror or e)); return (0, 0, 0)
+        self.w("%s %d/tcp: open (%s, %.0f ms)\n" % (host, port, ip, ms)); return (1, int(ms), 0)
+
+    # ------------------------------------------------------------ http HEAD
+    def c_http(self, url):
+        from urllib.parse import urlsplit, quote
+        u = url if "://" in url else "http://" + url
+        try: sp = urlsplit(u); port = sp.port
+        except ValueError: self.w("error: bad URL\n"); return (0, 0, 0)
+        scheme = sp.scheme.lower()
+        if scheme not in ("http", "https") or not sp.hostname or not self.okhost(sp.hostname):
+            self.w("error: use http://host/path or https://host/path\n"); return (0, 0, 0)
+        tls = scheme == "https"; port = port or (443 if tls else 80)
+        path = quote(sp.path or "/", safe="/%:@!$&'()*+,;=~-._") + (("?" + quote(sp.query, safe="=&%:@!$'()*+,;/?~-._")) if sp.query else "")
+        hosthdr = sp.hostname + ((":%d" % port) if port != (443 if tls else 80) else "")
+        self.w("HEAD %s://%s%s\n" % (scheme, hosthdr, path))
+        t0 = time.time()
+        try: s, ms, ip = self._open(sp.hostname, port, 8, tls)
+        except (OSError, ssl.SSLError) as e: self.w("failed: %s\n" % self._why(e, sp.hostname)); return (0, 0, 0)
+        try:
+            self.w("connected to %s port %d in %.0f ms\n" % (ip, port, ms))
+            if tls:
+                info, cert = self._tls_info(s); self.w("tls: %s\n" % info)
+                if cert: self.w("%s\n" % cert)
+            s.settimeout(8)
+            s.sendall(("HEAD %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: GATC-netkit/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n" % (path, hosthdr)).encode("ascii", "replace"))
+            buf, first = b"", None
+            while b"\r\n\r\n" not in buf and len(buf) < 65536:
+                try: chunk = s.recv(8192)
+                except (socket.timeout, TimeoutError): break
+                if not chunk: break
+                if first is None: first = (time.time() - t0) * 1000
+                buf += chunk
+        except (OSError, ssl.SSLError) as e: self.w("failed: %s\n" % self._why(e, sp.hostname)); return (0, 0, 0)
+        finally: s.close()
+        head = buf.split(b"\r\n\r\n")[0].decode("latin-1")
+        if not head.strip(): self.w("no response\n"); return (0, 0, 0)
+        self.w("\n%s\n" % self.clean(head))
+        if first is not None: self.w("\ntime to first byte: %.0f ms\n" % first)
+        m = re.match(r"HTTP/\S+\s+(\d+)", head)
+        return (1, int(m.group(1)) if m else 0, 0)
+
 class VM:
     def __init__(self, program, genome=False, stdin=None, stdout=None):
         self.program=program; self.pc=0; self.stack=[]; self.calls=[]; self.mem=[0]*MEM_SIZE
         self.stdin=stdin or sys.stdin; self.stdout=stdout or sys.stdout
         self.halted=False; self.exit_code=0; self.steps=0; self.genome=genome; self._halt_note=False
         self.file=bytearray(); self.filepath=None; self.savepath=None; self.dirty=0
-        self.ctl={k:0 for k in range(CTL_A1,CTL_LOST+1)}
+        self.ctl={k:0 for k in range(CTL_A1,CTL_LOST+1)}; self.ctl.update({k:0 for k in range(CTL_NA1,CTL_NR2+1)}); self.net=None
         self.groups=collections.deque(); self.u_total=0; self.u_suspend=0
     def load_file(self, path, addr=0):
         try:
@@ -345,6 +902,7 @@ class VM:
         if addr == CTL_SIZE: return len(self.file)
         if addr == CTL_DIRTY: return self.dirty
         if addr == CTL_MAGIC: return 51966
+        if addr == CTL_NMAGIC: return NET_MAGIC if self.net is not None else 1   # 1 = supported but off (no --net)
         return self.ctl.get(addr, 0)
     def store(self, addr, val):
         if 0 <= addr < len(self.mem): self.mem[addr] = val; return
@@ -361,7 +919,16 @@ class VM:
             return
         if addr == CTL_CMD: self.ctl_command(val); return
         if addr in (CTL_A1, CTL_A2, CTL_A3): self.ctl[addr] = val; return
+        if addr == CTL_NCMD: self.net_command(val); return
+        if addr in (CTL_NA1, CTL_NA2, CTL_NA3, CTL_NA4): self.ctl[addr] = val; return
         warn(f"store out of bounds {addr}")
+    def enable_net(self):
+        self.net = NetKit(self.stdout, self.mem)
+    def net_command(self, cmd):
+        c = self.ctl
+        if self.net is None: c[CTL_NSTATUS] = 0; return
+        st, r1, r2 = self.net.command(cmd, c[CTL_NA1], c[CTL_NA2], c[CTL_NA3], c[CTL_NA4])
+        c[CTL_NSTATUS], c[CTL_NR1], c[CTL_NR2] = st, r1, r2
     # ---------------- undo history (kept in the host) ----------------
     def u_begin(self):
         self.u_suspend = 0
@@ -683,11 +1250,13 @@ def main(argv=None):
     p.add_argument("--no-banner", action="store_true"); p.add_argument("--gene", action="store_true")
     p.add_argument("--load", help="load a binary file into VM memory at address 0")
     p.add_argument("--file", help="open FILE (up to 1 GiB) in the file-backed address space used by hexeditor.aa")
+    p.add_argument("--net", action="store_true", help="allow the program to use the network (ping, dig, whois, TCP/TLS) - needed by netkit.aa")
     p.add_argument("--save", help="where the editor's w command writes (default: the --file path, in place)")
     args=p.parse_intermixed_args(argv)
     if args.command=="help" and not args.source:
         print(BANNER); p.print_help()
-        print("\n  python3 GATCload.py run program.aa --no-banner")
+        print("\n  python3 GATCloader.py run program.aa --no-banner")
+        print("  python3 GATCloader.py run netkit.aa --no-banner --net --max-steps 500000000")
         print("  python3 GATCload.py run hex.aa --no-banner --load /etc/passwd")
         print("  python3 GATCload.py compile program.aa --dna -o program.dna")
         return 0
@@ -724,7 +1293,12 @@ def main(argv=None):
         vm.savepath = args.save
         if args.file:
             vm.load_edit_file(args.file)
-        return vm.run(max_steps=args.max_steps)
+        if args.net:
+            vm.enable_net()
+        try:
+            return vm.run(max_steps=args.max_steps)
+        finally:
+            if vm.net is not None: vm.net.close()
     except GATCError as e:
         warn(str(e)); return 1
 if __name__=="__main__":
