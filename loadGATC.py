@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse, random, sys
 from dataclasses import dataclass
 from typing import Optional
+import os, zlib, collections
 VERSION = "4.0.0-load"
 BANNER = r"""
   ____    _  _____ ____  __ _  _
@@ -69,6 +70,19 @@ CODON_TO_OP={
 "GTT":"DDUP","GTC":"DDROP","GTA":"TOR","GTG":"RFROM","GCT":"INV","GCC":"ZERO","GCA":"ONE","GCG":"CR",
 "GAT":"TSWP","GAC":"BOOL","GAA":"PSTO","GAG":"UNDER","GGT":"RDROP","GGC":"NROLL","GGA":"SIGN","GGG":"MADD"}
 MEM_SIZE,STACK_LIMIT,CALL_LIMIT,STEP_LIMIT_DEFAULT=4096,65536,4096,5_000_000
+# --- file-backed address space (used by hexeditor.aa) -----------------------------------
+# FETCH/STORE at FILE_BASE+n read/write byte n of the file given with --file (up to 1 GiB).
+# Cells 4096.. are control cells.  STORE a command number into CTL_CMD to run a bulk operation
+# in the host (fast); arguments go in CTL_A1/A2/A3, results come back in CTL_R1/R2/R3.
+FILE_BASE=65536
+MAX_FILE=1<<30                 # 1 GiB editing limit
+GROW_CAP=1<<28                 # largest single insert (256 MiB)
+UNDO_CAP=1<<28                 # undo history budget (about 256 MiB)
+CHUNK=1<<24
+CTL_CMD,CTL_A1,CTL_A2,CTL_SIZE,CTL_DIRTY,CTL_MAGIC,CTL_STATUS,CTL_R1,CTL_R2,CTL_R3,CTL_A3,CTL_LOST=range(4096,4108)
+# commands: 1 save  2 insert zeros(A1=off,A2=n)  3 delete(A1,A2)  4 find(A1=start,A2=len,A3=mem addr of pattern)
+#           5 checksum(A1,A2 -> R1 sum8,R2 xor8,R3 crc32)  6 undo  7 begin undo group
+#           8 fill(A1,A2,A3=value)  9 copy(A1=src,A2=len,A3=dst)  10 xor(A1,A2,A3=key)  11 set size(A1)
 BITS={"A":0,"C":1,"G":2,"T":3}; BASE="ACGT"
 class GATCError(Exception): pass
 _seen=set()
@@ -289,6 +303,9 @@ class VM:
         self.program=program; self.pc=0; self.stack=[]; self.calls=[]; self.mem=[0]*MEM_SIZE
         self.stdin=stdin or sys.stdin; self.stdout=stdout or sys.stdout
         self.halted=False; self.exit_code=0; self.steps=0; self.genome=genome; self._halt_note=False
+        self.file=bytearray(); self.filepath=None; self.savepath=None; self.dirty=0
+        self.ctl={k:0 for k in range(CTL_A1,CTL_LOST+1)}
+        self.groups=collections.deque(); self.u_total=0; self.u_suspend=0
     def load_file(self, path, addr=0):
         try:
             data = open(path, "rb").read()
@@ -299,6 +316,11 @@ class VM:
         for i in range(n):
             self.mem[addr + i] = data[i]
         print(f"loaded {n} bytes from {path} at address {addr}", file=sys.stderr)
+    def save_file(self, path, addr=0, length_cell=3328):
+        n = max(0, min(self.mem[length_cell], len(self.mem) - addr))
+        with open(path, "wb") as f:
+            f.write(bytes(v & 0xFF for v in self.mem[addr:addr + n]))
+        print(f"saved {n} bytes to {path}", file=sys.stderr)
     def push(self,n):
         if len(self.stack)>=STACK_LIMIT: warn("stack overflow; dropping push"); return
         self.stack.append(int(n))
@@ -413,12 +435,9 @@ class VM:
         elif op=="SHR":
             b,a=self.pop(),self.pop(); self.push(a>>(b&31)); self.pc+=1
         elif op=="FETCH":
-            addr=self.pop(); self.push(self.mem[addr] if 0<=addr<len(self.mem) else 0); self.pc+=1
+            self.push(self.fetch(self.pop())); self.pc+=1
         elif op=="STORE":
-            addr,val=self.pop(),self.pop()
-            if 0<=addr<len(self.mem): self.mem[addr]=val
-            else: warn(f"store out of bounds {addr}")
-            self.pc+=1
+            addr,val=self.pop(),self.pop(); self.store(addr,val); self.pc+=1
         elif op=="PSTO":
             addr=self.pop()
             if 0<=addr<len(self.mem): self.mem[addr]+=1
@@ -481,6 +500,15 @@ class VM:
             if self.genome: warn(f"QUIT {code} in genome; continuing"); self.pc+=1
             else: self.exit_code=code; self.halted=True
         else: warn(f"unknown op {op}; nop"); self.pc+=1
+def xor_fold(data):
+    """xor of all bytes of `data` using big-int folding (fast for megabyte chunks)"""
+    if not data: return 0
+    size = 1
+    while size < len(data): size <<= 1
+    v = int.from_bytes(bytes(data) + bytes(size - len(data)), "big"); w = size * 8
+    while w > 8:
+        w //= 2; v = (v >> w) ^ (v & ((1 << w) - 1))
+    return v
 def cmd_opcodes():
     by={}
     for c,n in sorted(CODON_TO_OP.items()): by.setdefault(n,[]).append(c)
@@ -497,6 +525,7 @@ def main(argv=None):
     p.add_argument("--max-steps", type=int, default=STEP_LIMIT_DEFAULT)
     p.add_argument("--no-banner", action="store_true"); p.add_argument("--gene", action="store_true")
     p.add_argument("--load", help="load a binary file into VM memory at address 0")
+    p.add_argument("--save", help="after the run, write memory[0 : mem[3328]] to this file (hexeditor.aa keeps its size in cell 3328)")
     args=p.parse_intermixed_args(argv)
     if args.command=="help" and not args.source:
         print(BANNER); p.print_help()
@@ -534,7 +563,10 @@ def main(argv=None):
         vm = VM(program, genome=genome)
         if args.load:
             vm.load_file(args.load)
-        return vm.run(max_steps=args.max_steps)
+        rc = vm.run(max_steps=args.max_steps)
+        if args.save:
+            vm.save_file(args.save)
+        return rc
     except GATCError as e:
         warn(str(e)); return 1
 if __name__=="__main__":

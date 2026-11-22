@@ -1,0 +1,615 @@
+# =====================================================================
+# hexeditor.aa  --  xxd-style hex editor for TempleGATC, files up to 1 GiB
+#
+#   python3 loadGATC.py run hexeditor.aa --no-banner --file FILE --max-steps 2000000000
+#   (needs the patched loader: loadGATC_file.patch  ->  --file / --save)
+#
+# The file is held by the loader, not in VM cells: byte n is at address 65536+n.
+#   control cells: 4096 cmd (1 save, 2 insert, 3 delete)  4097/4098 args
+#                  4099 size  4100 modified  4101 magic  4102 status
+# VM cells used by the editor:
+#   0   .. 255   command-line buffer
+#   256  .. 351   variables      352  .. 415   search pattern
+# No negative literals are used: bytecode/DNA decoding reads immediates unsigned.
+# Generated from hexeditor.tpl by gen.py -- addresses are assigned automatically.
+# =====================================================================
+
+MAIN B
+
+# ---------------------------------------------------------------------
+#  output helpers
+# ---------------------------------------------------------------------
+
+:NIB                       # (n --)   print low nibble as one lowercase hex digit
+  15 P D 9 G 39 M A 48 A W R
+
+:HEX2                      # (n --)   two hex digits
+  D 4 > NIB C
+  NIB C R
+
+:HEX8                      # (n --)   eight hex digits
+  D 24 > HEX2 C
+  D 16 > HEX2 C
+  D 8 > HEX2 C
+  HEX2 C R
+
+:BIN8                      # (n --)   eight binary digits
+  256 T
+  7 257 T
+:BLOOP
+  256 F 257 F > 1 P 48 A W
+  257 F - 257 T
+  257 F 0 / BLOOP *
+  R
+
+:PRINTC                    # (n --)   printable ASCII or '.'
+  D 32 L PDOT *
+  D 126 G PDOT *
+  W R
+:PDOT
+  ! 46 W R
+
+# ---------------------------------------------------------------------
+#  line reader + argument parser
+# ---------------------------------------------------------------------
+
+:READLINE                  # ( -- eof )   read one line into LINE, NUL-terminated
+  0 258 T
+:RLLOOP
+  ?
+  D 0 L RLEOF *            # EOF (getc returns a negative number)
+  D 10 E RLEOL *
+  D 13 E RLDROP *
+  258 F 255 / RLDROP *
+  258 F 0 A T
+  258 PSTO
+  RLLOOP B
+:RLDROP
+  ! RLLOOP B
+:RLEOL
+  ! RLFIN B
+:RLEOF
+  !
+  258 F RLFIN *
+  1 R
+:RLFIN
+  0 258 F 0 A T
+  0 259 T
+  0 R
+
+:PEEKC                     # ( -- c )   current char of the line (0 at end)
+  259 F 0 A F R
+
+:SKIPWS
+  PEEKC C 32 E SWADV *
+  PEEKC C 9 E SWADV *
+  R
+:SWADV
+  259 PSTO
+  SKIPWS B
+
+:HEXVAL                    # (c -- v)   hex digit value or -1
+  D 48 / OVER 57 ^ P HVDIG *
+  D 97 / OVER 102 ^ P HVLOW *
+  D 65 / OVER 70 ^ P HVUP *
+  ! 0 1 S R                # -1, computed at run time (no negative literals: see note in header)
+:HVDIG
+  48 S R
+:HVLOW
+  87 S R
+:HVUP
+  55 S R
+
+# PARSENUM: reads the next token.  hex by default, #123 decimal, 'c character.
+# sets numval, numok (1 = got a number), nbad (1 = token was malformed)
+:PARSENUM
+  SKIPWS C
+  0 260 T
+  0 261 T
+  0 262 T
+  16 263 T
+  PEEKC C
+  D 35 E PNDEC *
+  D 39 E PNCHR *
+  !
+:PNLOOP
+  PEEKC C
+  D 33 L PNEND *
+  HEXVAL C
+  D 0 L PNBAD *
+  D 263 F / PNBAD *
+  260 F 263 F M A 260 T
+  1 261 T
+  259 PSTO
+  PNLOOP B
+:PNBAD
+  ! 0 261 T 1 262 T
+  PNDL B
+:PNEND
+  ! R
+:PNDEC
+  ! 259 PSTO 10 263 T
+  PNLOOP B
+:PNCHR
+  ! 259 PSTO
+  PEEKC C D 33 L PNCERR *
+  260 T 1 261 T 259 PSTO
+:PNDL
+  PEEKC C 33 L PNFIN *
+  259 PSTO
+  PNDL B
+:PNCERR
+  ! 1 262 T
+:PNFIN
+  R
+
+:CLRSTK                    # empty the data stack (used after an error)
+  , CLRMORE *
+  R
+:CLRMORE
+  ! CLRSTK B
+
+# ---------------------------------------------------------------------
+#  xxd-style dump   da=start  dn=count
+# ---------------------------------------------------------------------
+
+:DUMPR
+  264 F DRGO *
+  R
+:DRGO
+  264 F 16 ; 265 T               # bytes on this line
+  266 F HEX8 C
+  58 W 32 W                  # ": "
+  0 267 T
+:DRHEX
+  267 F 16 L DRHB *
+  32 W                       # second space before the ascii column
+  0 267 T
+  DRASC B
+:DRHB
+  267 F 265 F L DRHBY *
+  32 W 32 W                  # pad a short last line
+  DRHSEP B
+:DRHBY
+  266 F 267 F A 65536 A F HEX2 C
+:DRHSEP
+  267 F 1 P DRHS1 *            # space after every second byte
+  DRHNX B
+:DRHS1
+  32 W
+:DRHNX
+  267 PSTO
+  DRHEX B
+:DRASC
+  267 F 265 F L DRAB *
+  CR
+  266 F 265 F A 266 T
+  264 F 265 F S 264 T
+  DUMPR B
+:DRAB
+  266 F 267 F A 65536 A F PRINTC C
+  267 PSTO
+  DRASC B
+
+# ---------------------------------------------------------------------
+#  search   plen bytes of pattern at PAT; the host does the scanning
+# ---------------------------------------------------------------------
+
+:SCAN
+  0 268 T
+  0 269 T
+:SCLOOP
+  269 F 4097 T
+  270 F 4098 T
+  352 4106 T
+  4 4096 T 4102 F SCHIT *
+  SCDONE B
+:SCHIT
+  4103 F 271 T
+  271 F HEX8 C CR
+  268 PSTO
+  268 F 256 / SCCAP *
+  271 F 1 A 269 T
+  SCLOOP B
+:SCCAP
+  "(stopped after 256 matches)" CR
+:SCDONE
+  268 F Y " match(es)" CR
+  R
+
+# ---------------------------------------------------------------------
+#  commands.  Each one is a jump target (not a call) and ends with
+#  LOOP B, or ERRARG / ERRRNG / ERRHOST on bad input.
+# ---------------------------------------------------------------------
+
+:ERRARG
+  "error: bad or missing argument (h = help)" CR
+  LOOP B
+:ERRRNG
+  "error: address out of range (the file has " 4099 F Y " bytes; limit 1 GiB)" CR
+  LOOP B
+:ERRHOST
+  "error: refused - range outside the file, or over the 1 GiB limit" CR
+  LOOP B
+
+# d [addr [len]]  -- xxd-style dump; bare d continues after the last dump (256 bytes)
+:CDUMP
+  272 F 266 T
+  256 264 T
+  PARSENUM C
+  262 F ERRARG *
+  261 F CDADDR *
+  CDFIT B
+:CDADDR
+  260 F 266 T
+  PARSENUM C
+  262 F ERRARG *
+  261 F CDLEN *
+  CDFIT B
+:CDLEN
+  260 F 264 T
+:CDFIT
+  266 F 4099 F / CDEND *         # start at or past the end: nothing to show
+  264 F 4099 F 266 F S ; 264 T
+  266 F 264 F A 272 T
+  DUMPR C
+  LOOP B
+:CDEND
+  "end of file (size 0x" 4099 F HEX8 C ")" CR
+  LOOP B
+
+# p addr  -- inspect one byte (hex, char, decimal, binary, 16/32-bit little endian)
+:CPEEK
+  PARSENUM C 261 F ERRARG J 260 F D 4099 F / ERRRNG * 273 T
+  273 F 65536 A F 274 T
+  273 F HEX8 C ": "
+  274 F HEX2 C
+  "  char '"
+  274 F PRINTC C
+  "'  dec "
+  274 F Y
+  "  bin "
+  274 F BIN8 C
+  273 F 3 A 4099 F L CPWIDE *
+  CR LOOP B
+:CPWIDE
+  273 F 65536 A F 273 F 1 A 65536 A F 8 < O 273 F 2 A 65536 A F 16 < O 273 F 3 A 65536 A F 24 < O 275 T
+  "  u16le " 275 F 65535 P Y "  u32le " 275 F Y CR
+  LOOP B
+
+# s addr b1 b2 ...  -- set bytes (addr may equal the file size to append)
+:CSET
+  PARSENUM C 261 F ERRARG J 260 F D 4099 F G ERRRNG * D 1073741824 / ERRRNG * 276 T
+  0 277 T
+:CSLOOP
+  PARSENUM C
+  261 F CSGOT *
+  262 F ERRARG *
+  277 F CSOK *
+  ERRARG B
+:CSGOT
+  276 F 1073741824 / ERRRNG *
+  260 F 276 F 65536 A T
+  276 PSTO
+  277 PSTO
+  CSLOOP B
+:CSOK
+  "wrote " 277 F Y " byte(s)" CR
+  LOOP B
+
+# a addr text  -- write ASCII text (escapes: \n \t \r \0 \\)
+:CASCII
+  PARSENUM C 261 F ERRARG J 260 F D 4099 F G ERRRNG * D 1073741824 / ERRRNG * 278 T
+  PEEKC C 32 E ASSKIP *
+  ASGO B
+:ASSKIP
+  259 PSTO
+:ASGO
+  0 277 T
+:ASLOOP
+  PEEKC C 279 T
+  279 F ASMORE *
+  277 F ASOK *
+  ERRARG B
+:ASMORE
+  259 PSTO
+  279 F 92 E ASESC *
+:ASPUT
+  278 F 1073741824 / ERRRNG *
+  279 F 278 F 65536 A T
+  278 PSTO
+  277 PSTO
+  ASLOOP B
+:ASESC
+  PEEKC C 280 T
+  280 F ASESC2 *
+  ASPUT B
+:ASESC2
+  259 PSTO
+  280 F 279 T
+  280 F 110 E ASN *
+  280 F 116 E AST *
+  280 F 114 E ASR *
+  280 F 48 E ASZ *
+  ASPUT B
+:ASN
+  10 279 T ASPUT B
+:AST
+  9 279 T ASPUT B
+:ASR
+  13 279 T ASPUT B
+:ASZ
+  0 279 T ASPUT B
+:ASOK
+  "wrote " 277 F Y " byte(s)" CR
+  LOOP B
+
+# r addr 48656c6c6f ...  -- write packed hex pairs (like xxd -r)
+:CREV
+  PARSENUM C 261 F ERRARG J 260 F D 4099 F G ERRRNG * D 1073741824 / ERRRNG * 281 T
+  0 277 T
+:CRLOOP
+  SKIPWS C
+  PEEKC C D CRMORE *
+  ! 277 F CROK *
+  ERRARG B
+:CRMORE
+  HEXVAL C D 0 L ERRARG *
+  282 T
+  259 PSTO
+  PEEKC C HEXVAL C D 0 L ERRARG *
+  283 T
+  259 PSTO
+  281 F 1073741824 / ERRRNG *
+  282 F 4 < 283 F O 281 F 65536 A T
+  281 PSTO
+  277 PSTO
+  CRLOOP B
+:CROK
+  "wrote " 277 F Y " byte(s)" CR
+  LOOP B
+
+# f addr len val  -- fill
+:CFILL
+  PARSENUM C 261 F ERRARG J 260 F D 4099 F G ERRRNG * D 1073741824 / ERRRNG * 284 T
+  PARSENUM C 261 F ERRARG J 260 F 285 T
+  PARSENUM C 261 F ERRARG J 260 F 286 T
+  284 F 4097 T 285 F 4098 T 286 F 4106 T
+  8 4096 T 4102 F ERRHOST J
+  "filled " 4103 F Y " byte(s)" CR
+  LOOP B
+
+# c src dst len  -- copy (overlap safe)
+:CCOPY
+  PARSENUM C 261 F ERRARG J 260 F D 4099 F / ERRRNG * 287 T
+  PARSENUM C 261 F ERRARG J 260 F D 4099 F G ERRRNG * D 1073741824 / ERRRNG * 288 T
+  PARSENUM C 261 F ERRARG J 260 F 289 T
+  287 F 4097 T 289 F 4098 T 288 F 4106 T
+  9 4096 T 4102 F ERRHOST J
+  "copied " 4103 F Y " byte(s)" CR
+  LOOP B
+
+# i addr n  -- insert n zero bytes (the rest of the file moves up)
+:CINS
+  PARSENUM C 261 F ERRARG J 260 F D 4099 F G ERRRNG * D 1073741824 / ERRRNG * 290 T
+  PARSENUM C 261 F ERRARG J 260 F 291 T
+  290 F 4097 T 291 F 4098 T
+  2 4096 T 4102 F ERRHOST J
+  "inserted " 4103 F Y " byte(s)" CR
+  LOOP B
+
+# x addr n  -- delete n bytes (the rest of the file moves down)
+:CDEL
+  PARSENUM C 261 F ERRARG J 260 F D 4099 F / ERRRNG * 290 T
+  PARSENUM C 261 F ERRARG J 260 F 291 T
+  290 F 4097 T 291 F 4098 T
+  3 4096 T 4102 F ERRHOST J
+  "deleted " 4103 F Y " byte(s)" CR
+  LOOP B
+
+# o addr len key  -- xor a range with a byte
+:COXOR
+  PARSENUM C 261 F ERRARG J 260 F D 4099 F / ERRRNG * 292 T
+  PARSENUM C 261 F ERRARG J 260 F 293 T
+  PARSENUM C 261 F ERRARG J 260 F 294 T
+  292 F 4097 T 293 F 4098 T 294 F 4106 T
+  10 4096 T 4102 F ERRHOST J
+  "xored " 4103 F Y " byte(s)" CR
+  LOOP B
+
+# / b1 b2 ...  -- find a byte sequence (up to 64 bytes)
+:CFIND
+  0 270 T
+:CFFLOOP
+  PARSENUM C
+  261 F CFFGOT *
+  262 F ERRARG *
+  270 F CFFRUN *
+  ERRARG B
+:CFFGOT
+  270 F 64 / ERRARG *
+  260 F 255 P 270 F 352 A T
+  270 PSTO
+  CFFLOOP B
+:CFFRUN
+  SCAN C
+  LOOP B
+
+# ? text  -- find ASCII text
+:CFINDT
+  PEEKC C 32 E CFT0 *
+  CFT1 B
+:CFT0
+  259 PSTO
+:CFT1
+  0 270 T
+:CFTLOOP
+  PEEKC C 279 T
+  279 F CFTGOT *
+  270 F CFFRUN *
+  ERRARG B
+:CFTGOT
+  270 F 64 / ERRARG *
+  279 F 270 F 352 A T
+  270 PSTO
+  259 PSTO
+  CFTLOOP B
+
+# k [addr [len]]  -- checksums: sum8, xor8, crc32 (computed by the host)
+:CSUM
+  0 295 T
+  4099 F 296 T
+  PARSENUM C
+  262 F ERRARG *
+  261 F CK1 *
+  CKGO B
+:CK1
+  260 F 295 T
+  295 F 4099 F / ERRRNG *
+  4099 F 295 F S 296 T
+  PARSENUM C
+  262 F ERRARG *
+  261 F CK2 *
+  CKGO B
+:CK2
+  260 F 4099 F 295 F S ; 296 T
+:CKGO
+  295 F 4097 T 296 F 4098 T
+  5 4096 T 4102 F ERRHOST J
+  "bytes: " 296 F Y CR
+  "sum8:  0x" 4103 F HEX2 C CR
+  "xor8:  0x" 4104 F HEX2 C CR
+  "crc32: 0x" 4105 F HEX8 C CR
+  LOOP B
+
+# u  -- undo the last modifying command
+:CUNDO
+  6 4096 T 4102 F UNDOK *
+  "nothing to undo" 4107 F ULOST *
+  CR LOOP B
+:ULOST
+  " - history was dropped (a change was too large to keep)" CR LOOP B
+:UNDOK
+  "undid " 4103 F Y " change(s)" CR
+  LOOP B
+
+# z  -- empty the file (undoable until you quit)
+:CZERO
+  0 4097 T
+  11 4096 T 4102 F ERRHOST J
+  "file emptied (w to save, u to undo)" CR
+  LOOP B
+
+# n [size]  -- show / set the file size
+:CSIZE
+  PARSENUM C
+  262 F ERRARG *
+  261 F CSZSET *
+  "size = 0x" 4099 F HEX8 C " (" 4099 F Y " bytes)"
+  4100 F CSZMOD *
+  CR LOOP B
+:CSZMOD
+  "  [modified]" CR LOOP B
+:CSZSET
+  260 F 4097 T
+  11 4096 T 4102 F ERRHOST J
+  "size is now " 4099 F Y " bytes" CR
+  LOOP B
+
+# w  -- save to the file (--file path, or --save path)
+:CWRITE
+  1 4096 T 4102 F CWOK *
+  "error: not saved" CR LOOP B
+:CWOK
+  "saved " 4099 F Y " bytes" CR
+  LOOP B
+
+:CHELP
+  "commands - numbers are hex; #N = decimal; 'c = a character" CR
+  "  d [addr [len]]      xxd-style dump; bare d = next 256 bytes" CR
+  "  p addr              inspect a byte: hex/char/dec/bin/u16/u32" CR
+  "  s addr b1 b2 ..     set bytes (addr = size appends)" CR
+  "  a addr text         write ASCII (escapes: \\n \\t \\r \\0 \\\\)" CR
+  "  r addr 48656c6c6f   write packed hex pairs (like xxd -r)" CR
+  "  f addr len val      fill a range" CR
+  "  c src dst len       copy (overlap safe)" CR
+  "  i addr n            insert n zero bytes" CR
+  "  x addr n            delete n bytes" CR
+  "  o addr len key      xor a range with a key byte" CR
+  "  / b1 b2 ..          find a byte sequence" CR
+  "  ? text              find ASCII text" CR
+  "  k [addr [len]]      sum8, xor8 and crc32" CR
+  "  n [size]            show / set the file size" CR
+  "  u                   undo the last change" CR
+  "  z                   empty the file" CR
+  "  w                   save    q  quit (q! = discard changes)" CR
+  "  h                   this help" CR
+  "tip: the d output is valid input for  xxd -r" CR
+  LOOP B
+
+:CQUIT
+  PEEKC C 33 E CQBYE *       # q!
+  4100 F CQWARN *
+:CQBYE
+  "bye" CR
+  H
+:CQWARN
+  "unsaved changes - w saves, q! quits without saving" CR
+  LOOP B
+
+# ---------------------------------------------------------------------
+#  main
+# ---------------------------------------------------------------------
+
+:MAIN
+  4101 F 51966 = NOMAGIC *
+  "TempleGATC xxd - hex editor   (h = help)" CR
+  "size " 4099 F Y " bytes (0x" 4099 F HEX8 C "), limit 1 GiB" CR
+  4099 F LOOP *
+  "empty file: use s / a / r to write bytes, w to save" CR
+  LOOP B
+:NOMAGIC
+  "this loader has no file support - apply loadGATC_file.patch" CR
+  H
+
+:LOOP
+  CLRSTK C
+:PROMPT
+  "xxd> "
+  READLINE C QUITEOF *
+  7 4096 T                   # start a new undo group for this command
+  SKIPWS C
+  PEEKC C D DISP *
+  ! PROMPT B
+:DISP
+  32 O 297 T                  # fold to lower case ('/' and '?' are unaffected)
+  259 PSTO
+  297 F 100 E CDUMP *         # d
+  297 F 112 E CPEEK *         # p
+  297 F 115 E CSET *          # s
+  297 F 97 E CASCII *         # a
+  297 F 114 E CREV *          # r
+  297 F 102 E CFILL *         # f
+  297 F 99 E CCOPY *          # c
+  297 F 105 E CINS *          # i
+  297 F 120 E CDEL *          # x
+  297 F 111 E COXOR *         # o
+  297 F 47 E CFIND *          # /
+  297 F 63 E CFINDT *         # ?
+  297 F 107 E CSUM *          # k
+  297 F 117 E CUNDO *         # u
+  297 F 122 E CZERO *         # z
+  297 F 110 E CSIZE *         # n
+  297 F 119 E CWRITE *        # w
+  297 F 104 E CHELP *         # h
+  297 F 113 E CQUIT *         # q
+  "unknown command - h for help" CR
+  LOOP B
+
+:QUITEOF
+  CR
+  4100 F QEWARN *
+  H
+:QEWARN
+  "(input ended with unsaved changes - they were not saved)" CR
+  H
