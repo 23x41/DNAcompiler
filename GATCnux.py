@@ -1150,8 +1150,8 @@ class TTYKit:
         self.vm = vm; self.mem = vm.mem
         self.fd = None; self.saved = None; self.raw = False; self.pending = b""
         self.t0 = time.time(); self.eof = False; self.touched = False
-        try: self.fd = sys.stdin.fileno()
-        except (AttributeError, ValueError, OSError): self.fd = None
+        try: self.fd = (vm.stdin if vm.stdin is not None else sys.stdin).fileno()
+        except (AttributeError, ValueError, OSError, io_unsupported()): self.fd = None
         self.is_tty = False
         try: self.is_tty = self.fd is not None and os.isatty(self.fd)
         except OSError: pass
@@ -1292,6 +1292,10 @@ class TTYKit:
 
 class EOFError_(Exception):
     pass
+
+def io_unsupported():
+    import io
+    return io.UnsupportedOperation
 
 class VM:
     def __init__(self, program, genome=False, stdin=None, stdout=None):
