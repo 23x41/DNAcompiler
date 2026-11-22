@@ -213,7 +213,10 @@ def strip_to_bases(text):
     blob="\n".join(kept) if kept else text
     return "".join(ch for ch in blob.upper().replace("U","T") if ch in "ACGT")
 def bytecode_to_dna(bc):
-    packet=len(bc).to_bytes(2,"big")+bc
+    # length header: 2 bytes; programs of 65535 bytes or more write FFFF + a 4-byte length
+    # (smaller programs encode exactly as before, so existing genomes are unchanged)
+    head=len(bc).to_bytes(2,"big") if len(bc)<0xFFFF else b"\xff\xff"+len(bc).to_bytes(4,"big")
+    packet=head+bc
     bases=[]
     for byte in packet:
         bases += [BASE[(byte>>6)&3],BASE[(byte>>4)&3],BASE[(byte>>2)&3],BASE[byte&3]]
@@ -231,6 +234,8 @@ def dna_to_bytecode(text):
         raw.append(byte)
     if len(raw)<2: warn("missing length; empty payload"); return b""
     ln=int.from_bytes(raw[:2],"big"); payload=bytes(raw[2:])
+    if ln==0xFFFF and len(payload)!=0xFFFF and len(raw)>=6:      # extended length (large programs)
+        ln=int.from_bytes(raw[2:6],"big"); payload=bytes(raw[6:])
     if ln!=len(payload): warn(f"length header {ln} but payload is {len(payload)}; ignoring length")
     return payload
 def codon_value(c):
@@ -259,11 +264,12 @@ def looks_packed(text):
     body=bases[3:-3]
     if len(body)<8 or len(body)%4: return False
     raw=bytearray()
-    for i in range(0,8,4):
+    for i in range(0,min(24,len(body)),4):
         byte=0
         for ch in body[i:i+4]: byte=(byte<<2)|BITS[ch]
         raw.append(byte)
-    return int.from_bytes(raw,"big")== (len(body)-8)//4
+    if int.from_bytes(raw[:2],"big")==(len(body)-8)//4: return True
+    return len(raw)>=6 and raw[:2]==b"\xff\xff" and int.from_bytes(raw[2:6],"big")==(len(body)-24)//4
 def compile_source(text, filename=""):
     lower=filename.lower()
     dna=lower.endswith((".dna",".gatc",".fa",".fasta",".fna"))
