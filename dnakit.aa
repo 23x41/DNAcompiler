@@ -1,0 +1,2071 @@
+# =====================================================================
+# dnakit.aa  --  GATC DNA toolkit: a sequence-analysis shell for the GATC VM
+#
+#   python3 GATCnux.py run dnakit.aa --no-banner --fs --max-steps 2000000000
+#   echo "orf genome.fa 150" | python3 GATCnux.py run dnakit.aa --no-banner --fs --max-steps 2000000000
+#
+# info FILE              records, length, base counts, GC% and GC skew
+# view FILE [START] [LEN]     coloured bases, numbered rows of 60
+# gc FILE [WINDOW]       GC% along the sequence as a bar chart
+# revcomp FILE [OUT]     reverse complement (IUPAC aware) as FASTA
+# orf FILE [MINAA]       open reading frames, ATG..stop, all six frames
+# translate FILE START END [-]   protein of a region, either strand
+# dis FILE [START] [COUNT]       codons as VM instructions, in paint's colours
+# codon XYZ              one codon: colour, instruction, amino acid
+# ls [DIR]  cd [DIR]  pwd  help  exit        and  > file / >> file
+#
+# Every algorithm here is GATC assembly; GATCnux.py --fs only opens, reads,
+# seeks and writes files.  Generated from dnakit.tpl by gen_aa.py.
+# Memory map (generated):
+#       0..  255  LINE
+#     256..  543  ARGBUF
+#     544..  575  ARGV
+#     576.. 1175  PA
+#    1176.. 1431  PB
+#    1432.. 1951  BLK
+#    1952.. 2251  OB
+#    2252.. 2507  NAME
+#    2508.. 2717  LBUF
+#    2718.. 2781  EBUF
+#    2782.. 3037  BT
+#    3038.. 3165  CT
+#    3166.. 3229  CC
+#    3230.. 3232  FO
+#    3233.. 3235  MS
+#    3236.. 3238  MC
+#    3239.. 3243  CNT
+#    3244.. 3394  variables (151)
+#    3395.. 3998  strings (31)   free: 97 cells
+# =====================================================================
+
+
+
+
+MAIN B
+
+# =====================================================================
+#  host bridge
+# =====================================================================
+
+:SYS                       # (cmd -- status)
+  4128 T 4133 F R
+:ERRB                      # following output goes to stderr
+  1 4129 T 25 SYS C ! R
+:ERRE                      # back to stdout (or the redirect file)
+  0 4129 T 25 SYS C ! R
+:STATP                     # (path follow -- ok)  sets $ssize $stype $smode $smtime
+  4130 T 4129 T 1 SYS C D STPF J
+  4134 F 3244 T 4135 F 3245 T 4136 F 3246 T 4137 F 3247 T
+:STPF
+  R
+:FOPEN                     # (path mode -- ok)  handle in %FR1
+  4130 T 4129 T 9 SYS C R
+:FCLOSE                    # (fd --)
+  4129 T 12 SYS C ! R
+:BREAD                     # (fd -- n)  read up to 512 bytes into BLK, 0 at EOF or error
+  4129 T 1432 4130 T 512 4131 T 10 SYS C BRFAIL J
+  4134 F R
+:BRFAIL
+  0 R
+:FSEEK                     # (fd offset --)  absolute position
+  4130 T 4129 T 0 4131 T 0 4132 T 13 SYS C ! R
+:SAMEF                     # (a b -- same)  %FR2 = b is inside a
+  4130 T 4129 T 24 SYS C ! 4134 F R
+:TTYCHK
+  21 SYS C ! 4134 F 3248 T 4135 F 3249 T 4136 F 3250 T R
+:TIMEINIT
+  18 SYS C ! 4134 F 3251 T 4135 F 3252 T R
+
+# =====================================================================
+#  strings
+# =====================================================================
+
+:STRLEN                    # (a -- n)
+  D
+:SLLP
+  D F SLEND J
+  + SLLP B
+:SLEND
+  SWAP S R
+
+:STREQ                     # (a b -- flag)
+  3253 T 3254 T
+:SQLP
+  3253 F F 3254 F F = SQNO *
+  3253 F F SQYES J
+  3253 PSTO 3254 PSTO SQLP B
+:SQNO
+  0 R
+:SQYES
+  1 R
+
+:STRNCPY                   # (src dst max --)  copy at most max-1 bytes; $ctr = 1 if cut
+  - 3255 T 3256 T 3257 T 0 3258 T
+:SNLP
+  3257 F F D SNEND J
+  3255 F SNFULL J
+  3256 F T
+  3257 PSTO 3256 PSTO 3255 F - 3255 T
+  SNLP B
+:SNFULL
+  1 3258 T
+:SNEND
+  ! 0 3256 F T R
+
+:APPENDS                   # (src dst max -- ok)  append src to the string at dst
+  3259 T 3260 T 3261 T
+  3260 F STRLEN C 3262 T
+  3261 F 3260 F 3262 F A 3259 F 3262 F S STRNCPY C
+  3258 F N R
+
+:PATHJOIN                  # (src buf -- ok)  buf = buf "/" src  (no doubled slash)
+  3263 T 3264 T
+  3263 F STRLEN C D PJNOSL J
+  - 3263 F A F 47 E PJCAT *
+  3703 3263 F 600 APPENDS C PJFAIL J
+  PJCAT B
+:PJNOSL
+  !
+:PJCAT
+  3264 F 3263 F 600 APPENDS C R
+:PJFAIL
+  0 R
+
+:ADDNAME                   # (buf -- ok)  buf = buf "/" NAME
+  2252 SWAP PATHJOIN C R
+
+:BASENAME                  # (p -- q)  q = text after the last '/'
+  D 3265 T
+:BNLP
+  D F BNEND J
+  D F 47 E BNSL *
+  + BNLP B
+:BNSL
+  + D 3265 T BNLP B
+:BNEND
+  ! 3265 F R
+
+:HASWILD                   # (p -- flag)  contains * or ?
+:HWLP
+  D F D HWNO J
+  D 42 E SWAP 63 E O HWYES *
+  + HWLP B
+:HWNO
+  ] 0 R
+:HWYES
+  ! 1 R
+
+:STRIPSL                   # (buf --)  drop trailing slashes, keep a lone "/"
+  3266 T
+:SSLP
+  3266 F STRLEN C D 2 L SSDONE *
+  - 3266 F A D F 47 = SSDONE *
+  0 SWAP T SSLP B
+:SSDONE
+  ! R
+
+:LOWER                     # (c -- c')
+  D 65 L LWX *
+  D 90 G LWX *
+  32 O
+:LWX
+  R
+
+:LOWERBUF                  # (buf --)
+:LBLP
+  D F LBEND J
+  D F LOWER C OVER T + LBLP B
+:LBEND
+  ! R
+
+:PARSENUM                  # (p -- n)  decimal; $nbad = 1 if empty or trailing junk
+  3267 T 0 3268 T 0 3269 T
+:PNLP
+  3267 F F D 48 L OVER 57 G O PNEND *
+  48 S 3268 F 10 M A 3268 T 3267 PSTO 3269 PSTO PNLP B
+:PNEND
+  3269 F N SWAP BOOL O 3270 T 3268 F R
+
+:WMATCH                    # (pat str -- flag)  wildcard match: * any run, ? one byte
+  3271 T 3272 T
+  0 3273 T 0 3274 T 0 3275 T 0 3276 T
+:WMLP
+  3274 F 3271 F A F WMTAIL J
+  3273 F 3272 F A F 3277 T
+  3277 F 63 E WMADV *
+  3277 F 42 E WMSTAR *
+  3277 F 3274 F 3271 F A F E WMADV *
+  3275 F WMNO J
+  3275 F 3273 T 3276 PSTO 3276 F 3274 T WMLP B
+:WMADV
+  3273 PSTO 3274 PSTO WMLP B
+:WMSTAR
+  3273 F + D 3275 T 3273 T 3274 F 3276 T WMLP B
+:WMTAIL
+  3273 F 3272 F A F 42 = WMEND *
+  3273 PSTO WMTAIL B
+:WMEND
+  3273 F 3272 F A F N R
+:WMNO
+  0 R
+
+# =====================================================================
+#  output
+# =====================================================================
+
+:WRITEN                    # (a n --)  raw bytes to stdout (UTF-8 safe, byte exact)
+  D WNZ J
+  4131 T 4130 T 1 4129 T 11 SYS C ! R
+:WNZ
+  ] R
+:PUTS                      # (a --)
+  D STRLEN C WRITEN C R
+
+:SPACES                    # (k --)
+  D 1 L SPEND *
+  32 W - SPACES B
+:SPEND
+  ! R
+
+:NUMW                      # (n -- digits)
+  1 SWAP
+:NWLP
+  D 10 L NWEND *
+  10 V SWAP + SWAP NWLP B
+:NWEND
+  ! R
+
+:PADNUM                    # (n width --)  right aligned
+  OVER NUMW C S SPACES C Y R
+
+:PAD2                      # (n --)  two digits
+  D 10 L P2Z *
+  Y R
+:P2Z
+  48 W Y R
+
+:HEXN                      # (n digits --)
+  3278 T 3279 T
+:HXLP
+  3278 F HXEND J
+  3278 F - D 3278 T 4 M 3279 F SWAP > 15 P
+  D 10 L HXNUM *
+  87 A W HXLP B
+:HXNUM
+  48 A W HXLP B
+:HXEND
+  R
+
+:OCT4                      # (n --)  4 octal digits
+  D 9 > 7 P Y D 6 > 7 P Y D 3 > 7 P Y 7 P Y R
+
+:HUMAN                     # (n width --)  1023, 4.0K, 12M ... right aligned
+  3280 T 3281 T
+  3281 F 1024 L HUPLAIN *
+  0 3282 T 1024 3283 T
+:HULP
+  3281 F 3283 F 1024 M L HUGO *
+  3282 F 4 / HUGO *
+  3283 F 1024 M 3283 T 3282 PSTO HULP B
+:HUGO                      # rounds up, like GNU ls/du/df -h
+  3281 F 10 M 3283 F A - 3283 F V 3284 T
+  3284 F 100 L HUDEC *
+  3281 F 3283 F A - 3283 F V
+  D 1024 L HUINT *
+  ! 10 3284 T 3283 F 1024 M 3283 T 3282 PSTO HUDEC B
+:HUINT
+  D NUMW C + 3280 F SWAP S SPACES C Y HUUNIT C R
+:HUDEC
+  3284 F 10 V NUMW C 3 A 3280 F SWAP S SPACES C
+  3284 F 10 V Y 46 W 3284 F 10 MOD Y HUUNIT C R
+:HUPLAIN
+  3281 F 3280 F PADNUM C R
+:HUUNIT
+  3282 F
+  D HUK J
+  D 1 E HUM *
+  D 2 E HUG *
+  D 3 E HUT *
+  ! 80 W R
+:HUK
+  ! 75 W R
+:HUM
+  ! 77 W R
+:HUG
+  ! 71 W R
+:HUT
+  ! 84 W R
+
+:PERMS                     # (mode --)  rwxr-xr-x
+  3285 T 8 3286 T
+:PMLP
+  3285 F 3286 F > 1 P
+  3286 F 3 MOD
+  SWAP PMDASH J
+  D 2 E PMR *
+  D 1 E PMW *
+  ! 120 W PMNX B
+:PMR
+  ! 114 W PMNX B
+:PMW
+  ! 119 W PMNX B
+:PMDASH
+  ! 45 W
+:PMNX
+  3286 F PMEND J
+  3286 F - 3286 T PMLP B
+:PMEND
+  R
+
+:TYPECH                    # (type --)
+  D 2 E TCD *
+  D 3 E TCL *
+  ! 45 W R
+:TCD
+  ! 100 W R
+:TCL
+  ! 108 W R
+
+# civil date from a unix time (Howard Hinnant's days-to-civil), local time via $tzoff
+:DATEFMT                   # (t --)  YYYY-MM-DD HH:MM[:SS]
+  3252 F A
+  D 0 L DFNEG *
+:DFGO
+  D 86400 V 3287 T 86400 MOD 3288 T
+  3287 F 719468 A 3289 T
+  3289 F 146097 V 3290 T
+  3289 F 3290 F 146097 M S 3291 T
+  3291 F 3291 F 1460 V S 3291 F 36524 V A 3291 F 146096 V S 365 V 3292 T
+  3292 F 3290 F 400 M A 3293 T
+  3291 F 3292 F 365 M 3292 F 4 V A 3292 F 100 V S S 3294 T
+  3294 F 5 M 2 A 153 V 3295 T
+  3294 F 3295 F 153 M 2 A 5 V S + 3296 T
+  3295 F 10 L DFM1 *
+  3295 F 9 S 3297 T DFM2 B
+:DFM1
+  3295 F 3 A 3297 T
+:DFM2
+  3297 F 2 ^ 3293 F A 3293 T
+  3293 F Y 45 W 3297 F PAD2 C 45 W 3296 F PAD2 C
+  32 W 3288 F 3600 V PAD2 C 58 W 3288 F 60 V 60 MOD PAD2 C
+  3298 F DFRET J
+  58 W 3288 F 60 MOD PAD2 C
+:DFRET
+  R
+:DFNEG
+  ! 0 DFGO B
+
+# colours (only when stdout is a terminal)
+:CRED
+  3248 F CX1 J 27 W "[1;31m"
+:CX1
+  R
+:CGRN
+  3248 F CX2 J 27 W "[32m"
+:CX2
+  R
+:CMAG
+  3248 F CX3 J 27 W "[35m"
+:CX3
+  R
+:CBLU
+  3248 F CX4 J 27 W "[1;34m"
+:CX4
+  R
+:CYEL
+  3248 F CX5 J 27 W "[1;33m"
+:CX5
+  R
+:CRST
+  3248 F CX6 J 27 W "[0m"
+:CX6
+  R
+
+:NAMECOL                   # (addr --)  print a name coloured by $etype / $emode
+  3248 F NCPLAIN J
+  3299 F 2 E NCDIR *
+  3299 F 3 E NCLNK *
+  3299 F 1 E 3300 F 73 P BOOL P NCEXE *
+:NCPLAIN
+  SAFEPUTS C R
+:NCDIR
+  27 W "[1;34m" NCGO B
+:NCLNK
+  27 W "[1;36m" NCGO B
+:NCEXE
+  27 W "[1;32m"
+:NCGO
+  SAFEPUTS C 27 W "[0m" R
+
+:SAFEPUTS                  # (a --)  like PUTS, but control bytes show as ? on a terminal
+  3248 F PUTS J
+  D 3301 T
+:SPSCAN
+  D F D SPLAST J
+  D 32 L SWAP 127 E O SPCTL *
+  + SPSCAN B
+:SPLAST
+  ! 3301 F S 3301 F SWAP WRITEN C R
+:SPCTL
+  D 3301 F S 3301 F SWAP WRITEN C 63 W + D 3301 T SPSCAN B
+
+# errors:  "cmd: 'path': message"  on stderr
+:EPRE
+  ERRB C 3302 F PUTS C ": " R
+:EEND
+  CR ERRE C 1 3303 T R
+:PERR                      # (errno --)
+  4129 T 2718 4130 T 64 4131 T 19 SYS C ! 2718 PUTS C R
+:EFAIL                     # (path errno --)
+  3304 T 3305 T
+  EPRE C "'" 3305 F PUTS C "': " 3304 F PERR C EEND C R
+:MISSING
+  EPRE C "missing operand (try: help)" EEND C R
+
+:CLRSTK
+  , CLRMORE *
+  R
+:CLRMORE
+  ! CLRSTK B
+
+# =====================================================================
+#  line reader (UTF-8 encodes non-ASCII input) and tokenizer
+# =====================================================================
+
+:PUTLB                     # (b --)
+  3306 F 255 / PLFULL *
+  3306 F 0 A T
+  3306 PSTO R
+:PLFULL
+  ! 1 3307 T R
+
+:UTF8                      # (c --)  c >= 128
+  D 2048 L U8TWO *
+  D 65536 L U8THREE *
+  D 18 > 240 O PUTLB C
+  D 12 > 63 P 128 O PUTLB C
+  D 6 > 63 P 128 O PUTLB C
+  63 P 128 O PUTLB C R
+:U8THREE
+  D 12 > 224 O PUTLB C
+  D 6 > 63 P 128 O PUTLB C
+  63 P 128 O PUTLB C R
+:U8TWO
+  D 6 > 192 O PUTLB C
+  63 P 128 O PUTLB C R
+
+:READLINE                  # ( -- eof )
+  0 3306 T 0 3307 T
+:RLLP
+  ?
+  D 0 L RLEOF *
+  D 10 E RLEOL *
+  D 13 E RLSKIP *
+  D RLSKIP J
+  D 128 L RLASC *
+  UTF8 C RLLP B
+:RLASC
+  PUTLB C RLLP B
+:RLSKIP
+  ! RLLP B
+:RLEOL
+  ! RLFIN B
+:RLEOF
+  !
+  3306 F RLFIN *
+  0 0 T 1 R
+:RLFIN
+  0 3306 F 0 A T
+  3307 F RLWARN *
+  0 R
+:RLWARN
+  ERRB C "sak: line cut to 255 bytes" CR ERRE C 0 R
+
+:LCH                       # ( -- c )
+  3308 F 0 A F R
+
+:TOKENIZE                  # LINE -> ARGV/$argc, handles quotes, \x and > >> redirection
+  0 3308 T 0 3309 T 0 3310 T
+:TKNEXT
+  LCH C
+  D 32 E TKWS *
+  D 9 E TKWS *
+  D TKDONE J
+  !
+  3310 F 31 / TKFIN *
+  3309 F 256 A 3310 F 544 A T
+  3310 PSTO 0 3311 T
+:TKCH
+  LCH C
+  D TKEND J
+  3311 F TKINQ *
+  D 32 E TKEND *
+  D 9 E TKEND *
+  D 34 E TKQOPEN *
+  D 39 E TKQOPEN *
+  D 92 E TKBSL *
+  D 62 E TKGT *
+  TKPUT C
+:TKADV
+  3308 PSTO TKCH B
+:TKWS
+  ! 3308 PSTO TKNEXT B
+:TKDONE
+  ! TKFIN B
+:TKEND
+  ! 0 TKPUT C TKNEXT B
+:TKQOPEN
+  3311 T 3308 PSTO TKCH B
+:TKINQ
+  D 3311 F E TKQCLOSE *
+  TKPUT C TKADV B
+:TKQCLOSE
+  ! 0 3311 T TKADV B
+:TKBSL
+  ! 3308 PSTO LCH C D TKEND J
+  TKPUT C TKADV B
+:TKGT                      # unquoted > inside a word: split it off as its own word
+  !
+  3310 F - 544 A F 3309 F 256 A E TKGTSAME *
+  0 TKPUT C
+  3310 F 31 / TKFIN *
+  3309 F 256 A 3310 F 544 A T 3310 PSTO
+:TKGTSAME
+  62 TKPUT C 3308 PSTO
+  LCH C 62 = TKGTEND *
+  62 TKPUT C 3308 PSTO
+:TKGTEND
+  0 TKPUT C TKNEXT B
+:TKPUT                     # (c --)  the last ARGBUF cell is never written: always a NUL
+  3309 F 287 / TKPFULL *
+  3309 F 256 A T 3309 PSTO R
+:TKPFULL
+  ! R
+:TKFIN
+  0 3312 T 0 3313 T
+:RDLP
+  3313 F 3310 F / RDDONE *
+  3313 F 544 A F
+  D F 62 = RDNX *
+  + D F 62 E RDAPP *
+  1 3312 T RDTGT B
+:RDAPP
+  + 2 3312 T
+:RDTGT
+  D F RDHAVE *
+  ! 3313 F + D 3310 F L RDNOTGT J
+  544 A F
+:RDHAVE
+  3314 T
+  3313 F 3310 T
+  RDDONE B
+:RDNX
+  ! 3313 PSTO RDLP B
+:RDNOTGT
+  ! ERRB C "sak: missing file name after >" CR ERRE C
+  0 3312 T 0 3310 T
+:RDDONE
+  R
+
+
+:OBFLUSH                   # the genetic-code tables print through this; here it has nothing to flush
+  R
+
+# =====================================================================
+#  the genetic code (shared with paint.aa)
+# =====================================================================
+# ---- generated by gen_codons.py: the standard genetic code (NCBI table 1) ----
+
+:AATAB                     # (codon*2 + AATAB) -> amino acid index, A C D E ... Y, 20 = stop
+  8 R                      # AAA K
+  11 R                      # AAC N
+  8 R                      # AAG K
+  11 R                      # AAT N
+  16 R                      # ACA T
+  16 R                      # ACC T
+  16 R                      # ACG T
+  16 R                      # ACT T
+  14 R                      # AGA R
+  15 R                      # AGC S
+  14 R                      # AGG R
+  15 R                      # AGT S
+  7 R                      # ATA I
+  7 R                      # ATC I
+  10 R                      # ATG M
+  7 R                      # ATT I
+  13 R                      # CAA Q
+  6 R                      # CAC H
+  13 R                      # CAG Q
+  6 R                      # CAT H
+  12 R                      # CCA P
+  12 R                      # CCC P
+  12 R                      # CCG P
+  12 R                      # CCT P
+  14 R                      # CGA R
+  14 R                      # CGC R
+  14 R                      # CGG R
+  14 R                      # CGT R
+  9 R                      # CTA L
+  9 R                      # CTC L
+  9 R                      # CTG L
+  9 R                      # CTT L
+  3 R                      # GAA E
+  2 R                      # GAC D
+  3 R                      # GAG E
+  2 R                      # GAT D
+  0 R                      # GCA A
+  0 R                      # GCC A
+  0 R                      # GCG A
+  0 R                      # GCT A
+  5 R                      # GGA G
+  5 R                      # GGC G
+  5 R                      # GGG G
+  5 R                      # GGT G
+  17 R                      # GTA V
+  17 R                      # GTC V
+  17 R                      # GTG V
+  17 R                      # GTT V
+  20 R                      # TAA *
+  19 R                      # TAC Y
+  20 R                      # TAG *
+  19 R                      # TAT Y
+  15 R                      # TCA S
+  15 R                      # TCC S
+  15 R                      # TCG S
+  15 R                      # TCT S
+  20 R                      # TGA *
+  1 R                      # TGC C
+  18 R                      # TGG W
+  1 R                      # TGT C
+  9 R                      # TTA L
+  4 R                      # TTC F
+  9 R                      # TTG L
+  4 R                      # TTT F
+
+:AANAME                   # (aa --) full name
+  2 M AANAMET A B
+:AANAMET
+  AANAME0 B
+  AANAME1 B
+  AANAME2 B
+  AANAME3 B
+  AANAME4 B
+  AANAME5 B
+  AANAME6 B
+  AANAME7 B
+  AANAME8 B
+  AANAME9 B
+  AANAME10 B
+  AANAME11 B
+  AANAME12 B
+  AANAME13 B
+  AANAME14 B
+  AANAME15 B
+  AANAME16 B
+  AANAME17 B
+  AANAME18 B
+  AANAME19 B
+  AANAME20 B
+:AANAME0
+  OBFLUSH C "Alanine" R
+:AANAME1
+  OBFLUSH C "Cysteine" R
+:AANAME2
+  OBFLUSH C "Aspartic acid" R
+:AANAME3
+  OBFLUSH C "Glutamic acid" R
+:AANAME4
+  OBFLUSH C "Phenylalanine" R
+:AANAME5
+  OBFLUSH C "Glycine" R
+:AANAME6
+  OBFLUSH C "Histidine" R
+:AANAME7
+  OBFLUSH C "Isoleucine" R
+:AANAME8
+  OBFLUSH C "Lysine" R
+:AANAME9
+  OBFLUSH C "Leucine" R
+:AANAME10
+  OBFLUSH C "Methionine" R
+:AANAME11
+  OBFLUSH C "Asparagine" R
+:AANAME12
+  OBFLUSH C "Proline" R
+:AANAME13
+  OBFLUSH C "Glutamine" R
+:AANAME14
+  OBFLUSH C "Arginine" R
+:AANAME15
+  OBFLUSH C "Serine" R
+:AANAME16
+  OBFLUSH C "Threonine" R
+:AANAME17
+  OBFLUSH C "Valine" R
+:AANAME18
+  OBFLUSH C "Tryptophan" R
+:AANAME19
+  OBFLUSH C "Tyrosine" R
+:AANAME20
+  OBFLUSH C "stop codon" R
+
+:AA3                   # (aa --) three-letter code
+  2 M AA3T A B
+:AA3T
+  AA30 B
+  AA31 B
+  AA32 B
+  AA33 B
+  AA34 B
+  AA35 B
+  AA36 B
+  AA37 B
+  AA38 B
+  AA39 B
+  AA310 B
+  AA311 B
+  AA312 B
+  AA313 B
+  AA314 B
+  AA315 B
+  AA316 B
+  AA317 B
+  AA318 B
+  AA319 B
+  AA320 B
+:AA30
+  OBFLUSH C "Ala" R
+:AA31
+  OBFLUSH C "Cys" R
+:AA32
+  OBFLUSH C "Asp" R
+:AA33
+  OBFLUSH C "Glu" R
+:AA34
+  OBFLUSH C "Phe" R
+:AA35
+  OBFLUSH C "Gly" R
+:AA36
+  OBFLUSH C "His" R
+:AA37
+  OBFLUSH C "Ile" R
+:AA38
+  OBFLUSH C "Lys" R
+:AA39
+  OBFLUSH C "Leu" R
+:AA310
+  OBFLUSH C "Met" R
+:AA311
+  OBFLUSH C "Asn" R
+:AA312
+  OBFLUSH C "Pro" R
+:AA313
+  OBFLUSH C "Gln" R
+:AA314
+  OBFLUSH C "Arg" R
+:AA315
+  OBFLUSH C "Ser" R
+:AA316
+  OBFLUSH C "Thr" R
+:AA317
+  OBFLUSH C "Val" R
+:AA318
+  OBFLUSH C "Trp" R
+:AA319
+  OBFLUSH C "Tyr" R
+:AA320
+  OBFLUSH C "Stop" R
+
+:AACLS                   # (aa --) short class
+  2 M AACLST A B
+:AACLST
+  AACLS0 B
+  AACLS1 B
+  AACLS2 B
+  AACLS3 B
+  AACLS4 B
+  AACLS5 B
+  AACLS6 B
+  AACLS7 B
+  AACLS8 B
+  AACLS9 B
+  AACLS10 B
+  AACLS11 B
+  AACLS12 B
+  AACLS13 B
+  AACLS14 B
+  AACLS15 B
+  AACLS16 B
+  AACLS17 B
+  AACLS18 B
+  AACLS19 B
+  AACLS20 B
+:AACLS0
+  OBFLUSH C "nonpolar" R
+:AACLS1
+  OBFLUSH C "polar" R
+:AACLS2
+  OBFLUSH C "acidic" R
+:AACLS3
+  OBFLUSH C "acidic" R
+:AACLS4
+  OBFLUSH C "aromatic" R
+:AACLS5
+  OBFLUSH C "nonpolar" R
+:AACLS6
+  OBFLUSH C "basic" R
+:AACLS7
+  OBFLUSH C "nonpolar" R
+:AACLS8
+  OBFLUSH C "basic" R
+:AACLS9
+  OBFLUSH C "nonpolar" R
+:AACLS10
+  OBFLUSH C "nonpolar" R
+:AACLS11
+  OBFLUSH C "polar" R
+:AACLS12
+  OBFLUSH C "nonpolar" R
+:AACLS13
+  OBFLUSH C "polar" R
+:AACLS14
+  OBFLUSH C "basic" R
+:AACLS15
+  OBFLUSH C "polar" R
+:AACLS16
+  OBFLUSH C "polar" R
+:AACLS17
+  OBFLUSH C "nonpolar" R
+:AACLS18
+  OBFLUSH C "aromatic" R
+:AACLS19
+  OBFLUSH C "aromatic" R
+:AACLS20
+  OBFLUSH C "stop" R
+
+:AASIDE                   # (aa --) side chain
+  2 M AASIDET A B
+:AASIDET
+  AASIDE0 B
+  AASIDE1 B
+  AASIDE2 B
+  AASIDE3 B
+  AASIDE4 B
+  AASIDE5 B
+  AASIDE6 B
+  AASIDE7 B
+  AASIDE8 B
+  AASIDE9 B
+  AASIDE10 B
+  AASIDE11 B
+  AASIDE12 B
+  AASIDE13 B
+  AASIDE14 B
+  AASIDE15 B
+  AASIDE16 B
+  AASIDE17 B
+  AASIDE18 B
+  AASIDE19 B
+  AASIDE20 B
+:AASIDE0
+  OBFLUSH C "nonpolar, aliphatic: methyl group" R
+:AASIDE1
+  OBFLUSH C "polar, sulfur: thiol (-SH)" R
+:AASIDE2
+  OBFLUSH C "acidic, negative: carboxyl" R
+:AASIDE3
+  OBFLUSH C "acidic, negative: carboxyl" R
+:AASIDE4
+  OBFLUSH C "nonpolar, aromatic: benzyl ring" R
+:AASIDE5
+  OBFLUSH C "just one hydrogen atom" R
+:AASIDE6
+  OBFLUSH C "basic: imidazole ring (+ or 0)" R
+:AASIDE7
+  OBFLUSH C "nonpolar, branched chain" R
+:AASIDE8
+  OBFLUSH C "basic, positive: amino group" R
+:AASIDE9
+  OBFLUSH C "nonpolar, branched chain" R
+:AASIDE10
+  OBFLUSH C "nonpolar, sulfur: thioether" R
+:AASIDE11
+  OBFLUSH C "polar, uncharged: amide" R
+:AASIDE12
+  OBFLUSH C "nonpolar ring bonded to backbone" R
+:AASIDE13
+  OBFLUSH C "polar, uncharged: amide" R
+:AASIDE14
+  OBFLUSH C "basic, positive: guanidinium" R
+:AASIDE15
+  OBFLUSH C "polar, uncharged: hydroxyl" R
+:AASIDE16
+  OBFLUSH C "polar, uncharged: hydroxyl" R
+:AASIDE17
+  OBFLUSH C "nonpolar, branched chain" R
+:AASIDE18
+  OBFLUSH C "nonpolar, aromatic: indole ring" R
+:AASIDE19
+  OBFLUSH C "polar, aromatic: phenol group" R
+:AASIDE20
+  OBFLUSH C "none: translation ends here" R
+
+:AAMASS                   # (aa --) mass
+  2 M AAMASST A B
+:AAMASST
+  AAMASS0 B
+  AAMASS1 B
+  AAMASS2 B
+  AAMASS3 B
+  AAMASS4 B
+  AAMASS5 B
+  AAMASS6 B
+  AAMASS7 B
+  AAMASS8 B
+  AAMASS9 B
+  AAMASS10 B
+  AAMASS11 B
+  AAMASS12 B
+  AAMASS13 B
+  AAMASS14 B
+  AAMASS15 B
+  AAMASS16 B
+  AAMASS17 B
+  AAMASS18 B
+  AAMASS19 B
+  AAMASS20 B
+:AAMASS0
+  OBFLUSH C "89.09 g/mol (free amino acid)" R
+:AAMASS1
+  OBFLUSH C "121.16 g/mol (free amino acid)" R
+:AAMASS2
+  OBFLUSH C "133.10 g/mol (free amino acid)" R
+:AAMASS3
+  OBFLUSH C "147.13 g/mol (free amino acid)" R
+:AAMASS4
+  OBFLUSH C "165.19 g/mol (free amino acid)" R
+:AAMASS5
+  OBFLUSH C "75.07 g/mol (free amino acid)" R
+:AAMASS6
+  OBFLUSH C "155.16 g/mol (free amino acid)" R
+:AAMASS7
+  OBFLUSH C "131.17 g/mol (free amino acid)" R
+:AAMASS8
+  OBFLUSH C "146.19 g/mol (free amino acid)" R
+:AAMASS9
+  OBFLUSH C "131.17 g/mol (free amino acid)" R
+:AAMASS10
+  OBFLUSH C "149.21 g/mol (free amino acid)" R
+:AAMASS11
+  OBFLUSH C "132.12 g/mol (free amino acid)" R
+:AAMASS12
+  OBFLUSH C "115.13 g/mol (free amino acid)" R
+:AAMASS13
+  OBFLUSH C "146.15 g/mol (free amino acid)" R
+:AAMASS14
+  OBFLUSH C "174.20 g/mol (free amino acid)" R
+:AAMASS15
+  OBFLUSH C "105.09 g/mol (free amino acid)" R
+:AAMASS16
+  OBFLUSH C "119.12 g/mol (free amino acid)" R
+:AAMASS17
+  OBFLUSH C "117.15 g/mol (free amino acid)" R
+:AAMASS18
+  OBFLUSH C "204.23 g/mol (free amino acid)" R
+:AAMASS19
+  OBFLUSH C "181.19 g/mol (free amino acid)" R
+:AAMASS20
+  OBFLUSH C "-" R
+
+:AAESS                   # (aa --) essential?
+  2 M AAESST A B
+:AAESST
+  AAESS0 B
+  AAESS1 B
+  AAESS2 B
+  AAESS3 B
+  AAESS4 B
+  AAESS5 B
+  AAESS6 B
+  AAESS7 B
+  AAESS8 B
+  AAESS9 B
+  AAESS10 B
+  AAESS11 B
+  AAESS12 B
+  AAESS13 B
+  AAESS14 B
+  AAESS15 B
+  AAESS16 B
+  AAESS17 B
+  AAESS18 B
+  AAESS19 B
+  AAESS20 B
+:AAESS0
+  OBFLUSH C "no - the body can make it" R
+:AAESS1
+  OBFLUSH C "no - the body can make it" R
+:AAESS2
+  OBFLUSH C "no - the body can make it" R
+:AAESS3
+  OBFLUSH C "no - the body can make it" R
+:AAESS4
+  OBFLUSH C "yes - it must come from food" R
+:AAESS5
+  OBFLUSH C "no - the body can make it" R
+:AAESS6
+  OBFLUSH C "yes - it must come from food" R
+:AAESS7
+  OBFLUSH C "yes - it must come from food" R
+:AAESS8
+  OBFLUSH C "yes - it must come from food" R
+:AAESS9
+  OBFLUSH C "yes - it must come from food" R
+:AAESS10
+  OBFLUSH C "yes - it must come from food" R
+:AAESS11
+  OBFLUSH C "no - the body can make it" R
+:AAESS12
+  OBFLUSH C "no - the body can make it" R
+:AAESS13
+  OBFLUSH C "no - the body can make it" R
+:AAESS14
+  OBFLUSH C "no - the body can make it" R
+:AAESS15
+  OBFLUSH C "no - the body can make it" R
+:AAESS16
+  OBFLUSH C "yes - it must come from food" R
+:AAESS17
+  OBFLUSH C "yes - it must come from food" R
+:AAESS18
+  OBFLUSH C "yes - it must come from food" R
+:AAESS19
+  OBFLUSH C "no - the body can make it" R
+:AAESS20
+  OBFLUSH C "-" R
+
+:AAOF                      # (codon -- amino acid index, 20 = stop)
+  2 M AATAB A C R
+
+# =====================================================================
+#  colours: the same 64 codon colours as paint.aa (xterm-256)
+# =====================================================================
+:LV                        # (0..3 -- 0 1 3 5)
+  D 2 / LVHI *
+  R
+:LVHI
+  D A - R
+:XTC                       # (codon -- xterm colour number)
+  D 4 > LV C 36 M OVER 2 > 3 P LV C 6 M A SWAP 3 P LV C A 16 A R
+:FGX                       # (xterm --)
+  3248 F FGNO J
+  27 W "[38;5;" Y "m" R
+:FGNO
+  ! R
+:BGX
+  3248 F FGNO J
+  27 W "[48;5;" Y "m" R
+:RST
+  3248 F RSTNO J
+  27 W "[0m"
+:RSTNO
+  R
+:BOLDON
+  3248 F RSTNO J
+  27 W "[1m" R
+:DIM
+  3248 F RSTNO J
+  27 W "[38;5;245m" R
+:BASEFG                    # (class 0..4 --)  A blue  C amber  G green  T coral  N grey
+  D BFA J
+  D 1 E BFC *
+  D 2 E BFG *
+  D 3 E BFT *
+  ! 245 FGX C R
+:BFA
+  ! 63 FGX C R
+:BFC
+  ! 214 FGX C R
+:BFG
+  ! 83 FGX C R
+:BFT
+  ! 203 FGX C R
+:CODONOUT                  # (codon --)  three bases, each in its colour
+  D 4 > D BASEFG C 3676 A F W
+  D 2 > 3 P D BASEFG C 3676 A F W
+  3 P D BASEFG C 3676 A F W RST C R
+:SWATCH                    # (codon --)  a block of the codon's own colour
+  3248 F SWNO J
+  XTC C BGX C "   " RST C R
+:SWNO
+  ! "[" "]" " " R
+:OPNAME                    # (codon --)  the VM instruction this codon encodes; $onl = its length
+  0 3315 T 3395 SWAP
+:ONLP
+  D ONGO J
+  SWAP
+:ONSKIP
+  D F 32 = ONNEXT1 *
+  + SWAP - ONLP B
+:ONNEXT1
+  + ONSKIP B
+:ONGO
+  !
+:ONPR
+  D F D 32 = OVER BOOL P ONPC *
+  ] R
+:ONPC
+  W 3315 PSTO + ONPR B
+# =====================================================================
+#  numbers
+# =====================================================================
+:NC                        # (n --)  with thousands commas
+  D 1000 L NCS *
+  D 1000 V NC C
+  44 W 1000 MOD
+  D 100 V Y D 10 V 10 MOD Y 10 MOD Y R
+:NCS
+  Y R
+:NCW                       # (n -- width)  printed width of NC
+  NUMW C D - 3 V A R
+:PADNC                     # (n width --)  right aligned with commas
+  OVER NCW C S SPACES C NC C R
+:PCT1                      # (part whole --)  one decimal, e.g. 47.3%
+  D PCZ J
+  SWAP 2000 M OVER V + 2 V NIP
+  D 10 V Y 46 W 10 MOD Y 37 W R
+:PCZ
+  ] "-" R
+
+# =====================================================================
+#  reading FASTA
+#  NB: next sequence character, header lines and line breaks skipped.
+#  class 0 A  1 C  2 G  3 T/U  4 other letter (N, IUPAC)  -1 end of file
+# =====================================================================
+:TABLES
+  0 3316 T
+:TBH                       # bytes 128..255: not sequence
+  3316 F 256 / TBH2 *
+  9 3316 F 2782 A T 3316 PSTO TBH B
+:TBH2
+  0 3316 T
+:TBLP
+  3316 F 128 / TBEND *
+  9 3316 F 2782 A T
+  0 3316 F 3038 A T
+  3316 F 32 O 97 L TBN *
+  3316 F 32 O 122 G TBN *
+  4 3316 F 2782 A T 3316 F 3316 F 3038 A T
+:TBN
+  3316 PSTO TBLP B
+:TBEND
+  4 45 2782 A T 45 45 3038 A T 4 42 2782 A T 5 62 2782 A T 7 2782 T
+  0 65 2782 A T 1 67 2782 A T 2 71 2782 A T 3 84 2782 A T 3 85 2782 A T
+  0 97 2782 A T 1 99 2782 A T 2 103 2782 A T 3 116 2782 A T 3 117 2782 A T
+  CTPAIRS C 42 42 3038 A T
+  0 3316 T
+:CCLP                      # codon classes for the ORF finder
+  3316 F 64 / CCEND *
+  0 3316 F 3166 A T 3316 PSTO CCLP B
+:CCEND
+  1 14 3166 A T             # ATG start
+  2 48 3166 A T 2 50 3166 A T 2 56 3166 A T     # TAA TAG TGA stop
+  3 19 3166 A T             # CAT  = ATG on the other strand
+  4 60 3166 A T 4 28 3166 A T 4 52 3166 A T     # TTA CTA TCA = stops on the other strand
+  R
+:CTPAIRS                   # complement pairs (upper and lower case): A-T G-C R-Y K-M B-V D-H, U -> A
+  65 84 CTP C 71 67 CTP C 82 89 CTP C 75 77 CTP C 66 86 CTP C 68 72 CTP C
+  65 85 3038 A T 97 117 3038 A T R
+:CTP                       # (x y --)  x <-> y, both cases
+  OVER OVER SWAP 3038 A T OVER OVER 3038 A T
+  32 O SWAP 32 O OVER OVER SWAP 3038 A T 3038 A T R
+
+:OPENIN                    # PA -> $ifd ( -- ok )
+  576 1 STATP C OIERR J
+  3245 F 2 E OIDIR *
+  3244 F 3317 T
+  576 0 FOPEN C OIERR J
+  4134 F 3318 T 0 3319 T 0 3320 T 0 3321 T 1 R
+:OIERR
+  576 4134 F EFAIL C 0 R
+:OIDIR
+  EPRE C "'" 576 PUTS C "': Is a directory" EEND C 0 R
+:CLOSEIN
+  3318 F FCLOSE C R
+:ISEEK                     # (byte offset --)  empty buffer: the 0 at BLK makes NB refill
+  D 3322 T 3318 F SWAP FSEEK C 1432 3319 T 1432 3320 T 0 1432 T R
+:REFILL                    # ( -- ok )  a 0 byte after the data marks the end of the buffer
+  3318 F 4129 T 1432 4130 T 512 4131 T 10 SYS C RFNO J
+  4134 F D RFNO0 J 1432 A D 3320 T 0 SWAP T 1432 3319 T 1 R
+:RFNO0
+  !
+:RFNO
+  0 R
+:NB                        # ( -- class | -1 )   the byte read is at $bp - 1
+  3319 F F 3319 PSTO 2782 A F
+  D 5 L NBRET *
+  D 7 E NBZERO *
+  5 = NB *
+  3321 PSTO
+:NBHL
+  3319 F 3320 F L NBHL2 *
+  REFILL C NBEOF J
+:NBHL2
+  3319 F F 3319 PSTO 10 = NBHL *
+  NB B
+:NBRET
+  R
+:NBZERO                    # a 0 byte: the end of the buffer (refill), or a stray 0 in the file
+  ! 3319 F - 3320 F = NB *
+  REFILL C NBEOF J
+  NB B
+:NBEOF
+  0 1 S R
+:RB                        # ( -- byte | -1 )  raw bytes, counting $rpos
+  3319 F 3320 F L RBHAVE *
+  REFILL C NBEOF J
+:RBHAVE
+  3319 F F 3319 PSTO 3322 PSTO R
+
+# backwards byte reader: BSEEK(end offset), BB returns bytes below it, down to $blim
+:BSEEK
+  3323 T 0 3324 T R
+:BB                        # ( -- byte | -1 )
+  3324 F BBFILL J
+:BBHAVE
+  3324 F - D 3324 T 1432 A F R
+:BBFILL
+  3323 F 3325 F ^ NBEOF *
+  3323 F 3325 F S 512 MIN 3326 T
+  3323 F 3326 F S 3323 T
+  3318 F 3323 F FSEEK C
+  3318 F 4129 T 1432 4130 T 3326 F 4131 T 10 SYS C NBEOF J
+  4134 F D BBZ J 3324 T BBHAVE B
+:BBZ
+  ! NBEOF B
+
+# PROBE: standard FASTA = one header line, then lines of equal width, so base b
+# sits at byte  header + b + (b / width) * line-end.  Sets $vh $vw $ve and $vn (bases).
+:PROBE
+  0 ISEEK C
+  RB C 62 = PBNOH *
+:PBHDR
+  RB C D 0 L PBHEND *
+  10 = PBHDR *
+  PBHD2 B
+:PBHEND
+  !
+:PBHD2
+  3322 F 3327 T PBW B
+:PBNOH
+  0 3327 T 0 ISEEK C
+:PBW
+  0 3328 T 1 3329 T
+:PBWL
+  RB C
+  D 0 L PBWEND *
+  D 10 E PBWEND *
+  D 13 E PBCR *
+  ! 3328 PSTO PBWL B
+:PBCR
+  ! 2 3329 T PBWD B
+:PBWEND
+  !
+:PBWD
+  3328 F 1 MAX 3328 T
+  0 3330 T
+  3317 F 1 L PBCOUNT *
+  3317 F - ISEEK C RB C 10 = PBCOUNT *
+  3329 F 3330 T
+:PBCOUNT
+  3317 F 3327 F S 3330 F S 0 MAX 3331 T
+  3331 F 3331 F 3328 F 3329 F A V 3329 F M S 3332 T R
+:BOFF                      # (base index -- byte offset)
+  D 3328 F V 3329 F M A 3327 F A R
+
+:HEADER                    # first header line (without '>') -> LBUF, "" if none
+  0 2508 T 0 ISEEK C
+  RB C 62 = HDRET *
+  0 3333 T
+:HDLP
+  RB C D 0 L HDEND *
+  D 10 E HDEND *
+  D 13 E HDEND *
+  3333 F 200 / HDSKIP *
+  3333 F 2508 A T 3333 PSTO HDLP B
+:HDSKIP
+  ! HDLP B
+:HDEND
+  ! 0 3333 F 2508 A T
+:HDRET
+  R
+
+# =====================================================================
+#  arguments
+# =====================================================================
+:FILEARG                   # ( -- ok )  argv[1] -> PA, opened, probed
+  3310 F 2 L FAUSE *
+  1 544 A F 576 600 STRNCPY C
+  OPENIN C R
+:FAUSE
+  EPRE C "needs a file (try: help)" EEND C 0 R
+:NARG                      # (index default -- n)  a number argument, or the default
+  SWAP D 3310 F / NADEF *
+  NIP 544 A F D F 45 E NANEG *
+  PARSENUM C 3270 F NABAD * R
+:NADEF
+  ! R
+:NANEG
+  ! 0 R
+:NABAD
+  ! EPRE C "that is not a number" EEND C 0 R
+:STRANDARG                 # (index -- minus?)  "-" means the reverse strand
+  D 3310 F / SADEF *
+  544 A F F 45 E R
+:SADEF
+  ! 0 R
+
+# =====================================================================
+#  info
+# =====================================================================
+:C_INFO
+  FILEARG C INRET J
+  HEADER C PROBE C
+  0 ISEEK C 0 3321 T
+  0 3239 T 0 3239 + T 0 3239 2 A T 0 3239 3 A T 0 3239 4 A T
+  3317 F 2000000 G INSLOW J
+  DIM C "(reading " 3317 F NC C " bytes...)" RST C CR
+:INSLOW
+:INLP
+  NB C D 0 L INEND *
+  3239 A PSTO INLP B
+:INEND
+  ! CLOSEIN C
+  3239 F 3239 + F A 3239 2 A F A 3239 3 A F A 3334 T
+  3334 F 3239 4 A F A 3335 T
+  BOLDON C 576 PUTS C RST C CR
+  2508 F INNOH J
+  DIM C "  header    " RST C 2508 PUTS C CR
+:INNOH
+  DIM C "  records   " RST C 3321 F 1 MAX NC C CR
+  DIM C "  length    " RST C 3335 F NC C " bases" CR
+  "  " 0 BASEFG C "A" RST C DIM C "         " RST C 3239 F 12 PADNC C "   " 3239 F 3334 F PCT1 C CR
+  "  " 1 BASEFG C "C" RST C DIM C "         " RST C 3239 + F 12 PADNC C "   " 3239 + F 3334 F PCT1 C CR
+  "  " 2 BASEFG C "G" RST C DIM C "         " RST C 3239 2 A F 12 PADNC C "   " 3239 2 A F 3334 F PCT1 C CR
+  "  " 3 BASEFG C "T" RST C DIM C "         " RST C 3239 3 A F 12 PADNC C "   " 3239 3 A F 3334 F PCT1 C CR
+  "  " 4 BASEFG C "N/other" RST C DIM C "   " RST C 3239 4 A F 12 PADNC C CR
+  DIM C "  GC        " RST C BOLDON C 3239 + F 3239 2 A F A 3334 F PCT1 C RST C
+  DIM C "   (of A+C+G+T)" RST C CR
+  DIM C "  GC skew   " RST C
+  3239 2 A F 3239 + F S 3336 T 3239 2 A F 3239 + F A 3337 T
+  3337 F INSK0 J
+  3336 F 0 L INSKN *
+  43 W INSKP B
+:INSKN
+  45 W 3336 F ~ 3336 T
+:INSKP
+  3336 F 1000 M 3337 F V
+  D 1000 V Y 46 W 1000 MOD D 100 L INSP1 * Y INSKD B
+:INSP1
+  48 W D 10 L INSP2 * Y INSKD B
+:INSP2
+  48 W Y
+:INSKD
+  DIM C "   (G-C)/(G+C)" RST C CR
+  3321 F 1 G INRET *
+  DIM C "  layout    " RST C 3328 F NC C " bases per line" CR
+:INRET
+  R
+:INSK0
+  "-" CR R
+
+# =====================================================================
+#  view
+# =====================================================================
+:C_VIEW
+  FILEARG C VWRET J
+  PROBE C
+  2 1 NARG C 1 MAX 3338 T
+  3 600 NARG C 1 MAX 3339 T
+  3338 F 3332 F G VWPAST *
+  3338 F - BOFF C ISEEK C
+  0 3340 T 99 3341 T
+:VWLP
+  3340 F 3339 F / VWEND *
+  NB C D 0 L VWEND0 *
+  3340 F 60 MOD VWNOROW *
+  3340 F VWFIRST J
+  RST C CR 99 3341 T
+:VWFIRST
+  DIM C 3338 F 3340 F A 11 PADNC C "  " RST C 99 3341 T VWCH B
+:VWNOROW
+  3340 F 10 MOD VWCH *
+  32 W
+:VWCH
+  D 3341 F E VWSAME *
+  D 3341 T D BASEFG C
+:VWSAME
+  ! 3319 F - F W
+  3340 PSTO VWLP B
+:VWEND0
+  !
+:VWEND
+  RST C CR CLOSEIN C
+  DIM C "bases " 3338 F NC C "-" 3338 F 3340 F A - NC C " of " 3332 F NC C RST C CR R
+:VWPAST
+  CLOSEIN C EPRE C "start is past the end (" 3332 F NC C " bases)" EEND C
+:VWRET
+  R
+
+# =====================================================================
+#  gc: GC% in windows, drawn as bars
+# =====================================================================
+:C_GC
+  FILEARG C GCRET J
+  PROBE C
+  2 0 NARG C 3342 T
+  3342 F GCHAVE *
+  3332 F 29 A 30 V 100 MAX 3342 T
+:GCHAVE
+  3342 F 10 MAX 3342 T
+  0 ISEEK C
+  BOLDON C 576 PUTS C RST C DIM C "   window " 3342 F NC C " bases" RST C CR
+  0 3343 T 0 3344 T 0 3345 T 0 3346 T 0 3347 T 0 3348 T 1001 3349 T 0 3350 T
+:GCLP
+  NB C D 0 L GCEND *
+  D 1 E OVER 2 E O 3345 MADD
+  D 4 L 3346 MADD
+  ! 3344 PSTO 3343 PSTO
+  3344 F 3342 F L GCLP *
+  GCBAR C GCLP B
+:GCEND
+  ! 3344 F GCDONE J
+  GCBAR C
+:GCDONE
+  CLOSEIN C
+  DIM C "  overall GC " RST C BOLDON C 3347 F 3348 F PCT1 C RST C
+  3350 F GCRET J
+  DIM C "   lowest window " RST C 3349 F 10 V Y 46 W 3349 F 10 MOD Y 37 W
+  DIM C "   highest " RST C 3350 F 10 V Y 46 W 3350 F 10 MOD Y 37 W
+:GCRET
+  CR R
+:GCBAR                     # one window: range, GC%, a bar of 0..50 blocks
+  24 3343 F 3344 F S + NCW C S 3343 F NCW C S SPACES C
+  3343 F 3344 F S + NC C DIM C "-" RST C 3343 F NC C "   "
+  3345 F 3347 MADD 3346 F 3348 MADD
+  3346 F GCBNONE J
+  3345 F 1000 M 3346 F V 3351 T
+  3351 F 3349 F MIN 3349 T 3351 F 3350 F MAX 3350 T
+  3351 F 10 V 3 PADNUM C 46 W 3351 F 10 MOD Y "%  "
+  3351 F 350 L GCB1 *
+  3351 F 450 L GCB2 *
+  3351 F 550 L GCB3 *
+  3351 F 650 L GCB4 *
+  203 GCBGO B
+:GCB1
+  39 GCBGO B
+:GCB2
+  83 GCBGO B
+:GCB3
+  227 GCBGO B
+:GCB4
+  214
+:GCBGO
+  FGX C 3721 3351 F 10 A 20 V 3 M WRITEN C RST C
+:GCBNEXT
+  CR 0 3344 T 0 3345 T 0 3346 T R
+:GCBNONE
+  "   no A/C/G/T here" GCBNEXT B
+
+# =====================================================================
+#  revcomp: reads the file backwards, complements every base
+# =====================================================================
+:OBC                       # (byte --)  buffered output to $ofd
+  3352 F T 3352 PSTO
+  3352 F 1952 S 280 L OBCR *
+  OBOUT C
+:OBCR
+  R
+:OBOUT
+  3352 F 1952 S D OBOZ J
+  3353 F 4129 T 1952 4130 T 4131 T 11 SYS C !
+  1952 3352 T R
+:OBOZ
+  ! R
+:OBS                       # (addr --)
+  D F OBSE J
+  D F OBC C + OBS B
+:OBSE
+  ! R
+
+:C_REVCOMP
+  FILEARG C RCRET J
+  PROBE C HEADER C
+  1 3353 T 0 3354 T
+  3310 F 3 L RCSTD *
+  2 544 A F 1176 256 STRNCPY C
+  576 1176 SAMEF C RCSAME *
+  1176 1 FOPEN C RCOFAIL J
+  4134 F 3353 T 1 3354 T
+:RCSTD
+  1952 3352 T
+  62 OBC C
+  2508 F RCNOH J
+  2508 OBS C RCHD2 B
+:RCNOH
+  576 OBS C
+:RCHD2
+   3872  OBS C 10 OBC C
+  3317 F BSEEK C 3327 F 3325 T
+  0 3355 T 0 3356 T 0 3357 T
+:RCLP
+  BB C D 0 L RCEND *
+  D 62 E RCMULTI *
+  127 P 3038 A F D RCSKIP J
+  OBC C 3356 PSTO 3355 PSTO
+  3355 F 60 L RCLP *
+  10 OBC C 0 3355 T RCLP B
+:RCSKIP
+  ! RCLP B
+:RCMULTI
+  1 3357 T
+:RCEND
+  !
+  3355 F RCNOEOL J
+  10 OBC C
+:RCNOEOL
+  OBOUT C CLOSEIN C
+  3354 F RCMSG J
+  3353 F FCLOSE C
+  DIM C "wrote " 3356 F NC C " bases to " 1176 PUTS C RST C CR
+:RCMSG
+  3357 F RCRET J
+  EPRE C "this file has more than one record: revcomp reads single-record FASTA" EEND C
+:RCRET
+  R
+:RCSAME
+  CLOSEIN C EPRE C "the output must be a different file" EEND C R
+:RCOFAIL
+  CLOSEIN C 1176 4134 F EFAIL C R
+
+# =====================================================================
+#  orf: one pass, all six frames.
+#  The codon ending at each base belongs to frame (pos-2) mod 3.
+#  + strand: ATG opens an ORF in its frame, the next stop in frame closes it.
+#  - strand: CAT (ATG read backwards) after a TTA/CTA/TCA stop starts an ORF
+#  that runs back to that stop; the last CAT before the next stop gives the longest.
+# =====================================================================
+:C_ORF
+  FILEARG C ORRET J
+  2 100 NARG C 1 MAX 3358 T
+  0 ISEEK C
+  0 3230 T 0 3230 + T 0 3230 2 A T 0 3233 T 0 3233 + T 0 3233 2 A T 0 3236 T 0 3236 + T 0 3236 2 A T
+  0 3359 T 0 3360 T 1 3361 T 2 3362 T 0 3363 T 0 3364 T 0 3365 T
+  BOLDON C "   #  strand frame       start         end   length" RST C CR
+:ORLP
+  NB C
+  D 0 L OREND *
+  D 4 L ORBASE *
+  ! 0 3 3362 T
+:ORBASE
+  3360 F 4 M A 63 P 3360 T
+  3362 F ORCHECK J
+  3362 F - 3362 T ORNEXT B
+:ORCHECK
+  3360 F 3166 A F D ORCLS *
+  !
+:ORNEXT
+  3359 PSTO 3361 F + D 3 L ORF3 *
+  ! 0
+:ORF3
+  3361 T ORLP B
+:ORCLS                     # (class --)  1 ATG  2 stop  3 CAT  4 reverse stop
+  D 1 E ORATG *
+  D 2 E ORSTOP *
+  D 3 E ORCAT *
+  ! 3361 F 3236 A F ORMREP *
+  3359 F - 3361 F 3233 A T 0 3361 F 3236 A T ORNEXT B
+:ORATG
+  ! 3361 F 3230 A F ORNEXT *
+  3359 F - 3361 F 3230 A T ORNEXT B
+:ORSTOP
+  ! 3361 F 3230 A F D ORNEXTD J
+  3359 F + 3366 T 3367 T
+  3366 F 3367 F S + 3 V - 3368 T
+  0 3361 F 3230 A T
+  3368 F 3358 F L ORNEXT *
+  3364 PSTO 3367 F 3366 F 0 ORPRINT C ORNEXT B
+:ORNEXTD
+  ! ORNEXT B
+:ORCAT
+  ! 3361 F 3233 A F ORNEXT J
+  3359 F - 3361 F 3236 A T ORNEXT B
+:ORMREP                    # a stop on the - strand closes the ORF that began at the last CAT
+  ORMOUT C
+:ORMSKIP
+  3359 F - 3361 F 3233 A T 0 3361 F 3236 A T ORNEXT B
+:ORMOUT                    # report the - strand ORF pending in frame $ofr, if long enough
+  3361 F 3236 A F 2 A 3367 T 3361 F 3233 A F 3366 T
+  3367 F 3366 F S + 3 V - 3368 T
+  3368 F 3358 F L ORMORET *
+  3365 PSTO 3367 F 3366 F 1 ORPRINT C
+:ORMORET
+  R
+:ORPRINT                   # (start end minus --)
+  3369 T 3370 T 3371 T
+  3363 PSTO 3363 F 4 PADNUM C
+  3369 F ORPM *
+  "  " 83 FGX C "   +" RST C ORPF B
+:ORPM
+  "  " 203 FGX C "   -" RST C
+:ORPF                      # frame: + uses the start, - the stop end (both counted from base 1)
+  "  " 3369 F ORPFM *
+  43 W 3371 F - 3 MOD + Y ORPFN B
+:ORPFM
+  45 W 3370 F - 3 MOD + Y
+:ORPFN
+  3371 F 14 PADNC C 3370 F 12 PADNC C
+  3368 F 6 PADNUM C " aa" CR R
+:OREND                     # end of file: - strand ORFs whose CAT came after the last stop
+  ! 0 3361 T
+:ORELP
+  3361 F 3 / OREDONE *
+  3361 F 3236 A F ORENX J
+  ORMOUT C
+:ORENX
+  3361 PSTO ORELP B
+:OREDONE
+  CLOSEIN C
+  DIM C 3363 F NC C " ORFs of at least " 3358 F NC C " amino acids (" 3364 F NC C " on +, " 3365 F NC C " on -)" RST C CR
+  DIM C "translate FILE START END shows a protein (add - for the - strand)" RST C CR
+:ORRET
+  R
+
+# =====================================================================
+#  translate FILE START END [-]
+# =====================================================================
+:C_TRANSLATE
+  FILEARG C TRRET J
+  PROBE C
+  3310 F 4 L TRUSE *
+  2 0 NARG C 3 0 NARG C
+  OVER OVER MIN 1 MAX 3372 T MAX 3332 F MIN 3373 T
+  4 STRANDARG C 3374 T
+  3372 F 3373 F G TRUSE *
+  0 3375 T 0 3376 T 0 3377 T 0 3378 T
+  BOLDON C 576 PUTS C RST C DIM C "  " 3372 F NC C "-" 3373 F NC C
+  3374 F TRPLUSH J
+  "  - strand (reverse complement)" TRHD B
+:TRPLUSH
+  "  + strand"
+:TRHD
+  RST C CR
+  3374 F TRMINUS *
+  3372 F - BOFF C ISEEK C
+  3373 F 3372 F S + 3379 T
+:TRPLP
+  3379 F TREND J
+  NB C D 0 L TRENDD *
+  TRBASE C 3379 F - 3379 T TRPLP B
+:TRMINUS
+  3373 F - BOFF C + BSEEK C 3327 F 3325 T
+  3373 F 3372 F S + 3379 T
+:TRMLP
+  3379 F TREND J
+  BB C D 0 L TRENDD *
+  127 P 2782 A F D 5 L TRMB *
+  ! TRMLP B
+:TRMB
+  D 4 L TRMC *
+  TRBASE C 3379 F - 3379 T TRMLP B
+:TRMC
+  3 SWAP S TRBASE C 3379 F - 3379 T TRMLP B
+:TRBASE                    # (class --)  collect a codon, print its amino acid
+  D 4 E TRN *
+  3376 F 4 M A 3376 T TRK B
+:TRN
+  ! 1 3377 T 3376 F 4 M 3376 T
+:TRK
+  3375 PSTO 3375 F 3 L TRBR *
+  3378 F 60 MOD TRNOROW *
+  3378 F TRFIRST J
+  CR
+:TRFIRST
+  DIM C 3378 F + 7 PADNC C "  " RST C
+:TRNOROW
+  3377 F TRX *
+  3376 F AAOF C D 20 E TRSTOP *
+  3681 A F W TRDONE B
+:TRSTOP
+  ! 203 FGX C 42 W RST C TRDONE B
+:TRX
+  88 W
+:TRDONE
+  3378 PSTO 0 3375 T 0 3376 T 0 3377 T
+:TRBR
+  R
+:TRENDD
+  !
+:TREND
+  CLOSEIN C CR
+  DIM C 3378 F NC C " amino acids  (* = stop, X = unknown base)" RST C CR R
+:TRUSE
+  CLOSEIN C EPRE C "usage: translate FILE START END [-]" EEND C
+:TRRET
+  R
+
+# =====================================================================
+#  dis: codons as GATC instructions, the way the loader runs a gene
+# =====================================================================
+:C_DIS
+  FILEARG C DSRET J
+  PROBE C
+  2 1 NARG C 1 MAX 3380 T
+  3 48 NARG C 1 MAX 3381 T
+  3380 F 3332 F G VWPAST *
+  3380 F - BOFF C ISEEK C
+  3380 F 3382 T 0 3383 T 0 3384 T
+  BOLDON C "      base  colour codon  instruction    amino acid" RST C CR
+:DSLP
+  3383 F 3381 F / DSEND *
+  DSCODON C DSENDX J 3385 T
+  3382 F 10 PADNC C "  " 3385 F SWATCH C "  " 3385 F CODONOUT C "  "
+  3384 F DSIMM *
+  3385 F OPNAME C 13 3315 F S SPACES C
+  3385 F 0 E DSLITON *
+  DSAA B
+:DSLITON
+  1 3384 T DSAA B
+:DSIMM                     # the codon after LIT is its number, 0..63
+  0 3384 T DIM C "= " 3385 F Y 3385 F 10 L DSIMM1 *
+  "         " DSAA B
+:DSIMM1
+  "          "
+:DSAA
+  RST C 3385 F AAOF C D 20 E DSSTOP *
+  D AA3 C " " 3681 A F W DSNOTE B
+:DSSTOP
+  ! 203 FGX C "stop" RST C
+:DSNOTE
+  3382 F 1 E 3385 F 14 E P DSSTART *
+  CR 3382 F 3 A 3382 T 3383 PSTO DSLP B
+:DSSTART
+  DIM C "   start codon: skipped by the loader" RST C CR
+  3382 F 3 A 3382 T 3383 PSTO DSLP B
+:DSCODON                   # ( -- codon ok )  next three bases, N read as A
+  0 3
+:DSCLP
+  D DSCOK J
+  NB C D 0 L DSCEOF *
+  D 4 E DSCN *
+  ROT 4 M A SWAP - DSCLP B
+:DSCN
+  ! 0 ROT 4 M A SWAP - DSCLP B
+:DSCOK
+  ! 1 R
+:DSCEOF
+  ] ! 0 0 R
+:DSENDX
+  !
+:DSEND
+  CLOSEIN C
+  DIM C "LIT reads the next codon as a number (0-63). Packed .dna files from 'compile --dna'" RST C CR
+  DIM C "store bytes 4 bases each, so read those with GATCnux.py disasm instead." RST C CR
+:DSRET
+  R
+
+# =====================================================================
+#  codon XYZ
+# =====================================================================
+:C_CODON
+  3310 F 2 L CDUSE *
+  1 544 A F 3386 T 0 3387 T 0 3388 T
+:CDLP
+  3388 F 3 / CDGOT *
+  3386 F 3388 F A F D CDUSE0 J
+  127 P 2782 A F D 4 L CDB *
+  ! CDUSE B
+:CDB
+  3387 F 4 M A 3387 T 3388 PSTO CDLP B
+:CDUSE0
+  !
+:CDUSE
+  EPRE C "usage: codon ACG  (three of A C G T/U)" EEND C R
+:CDGOT
+  3386 F 3 A F CDUSE *
+  "  " 3387 F SWATCH C "  " BOLDON C 3387 F CODONOUT C RST C
+  DIM C "   mRNA " RST C
+  3387 F 4 > CDRNA C 3387 F 2 > 3 P CDRNA C 3387 F 3 P CDRNA C
+  DIM C "   colour " RST C 3387 F 4 > 85 M Y "," 3387 F 2 > 3 P 85 M Y "," 3387 F 3 P 85 M Y CR
+  DIM C "  VM instruction  " RST C BOLDON C 3387 F OPNAME C RST C CR
+  DIM C "  amino acid      " RST C BOLDON C 3387 F AAOF C D AANAME C RST C
+  D 20 E CDSTOP *
+  "  (" D AA3 C "/" 3681 A F W ")" CR
+  DIM C "  side chain      " RST C 3387 F AAOF C AASIDE C CR
+  DIM C "  mass            " RST C 3387 F AAOF C AAMASS C CR
+  CDSYN B
+:CDSTOP
+  ! CR
+:CDSYN
+  DIM C "  same meaning    " RST C
+  0 3388 T
+:CDSLP
+  3388 F 64 / CDSEND *
+  3388 F AAOF C 3387 F AAOF C = CDSNX *
+  3388 F CODONOUT C " "
+:CDSNX
+  3388 PSTO CDSLP B
+:CDSEND
+  CR R
+:CDRNA                     # (base --)
+  D 3 E CDU *
+  3676 A F W R
+:CDU
+  ! 85 W R
+
+# =====================================================================
+#  ls cd pwd
+# =====================================================================
+:C_LS
+  3310 F 2 L LSDOT *
+  1 544 A F 576 600 STRNCPY C LSGO B
+:LSDOT
+  3705 576 600 STRNCPY C
+:LSGO
+  576 4129 T 2 SYS C LSERR J
+  4134 F 3389 T 4135 F 3390 T 0 3391 T
+:LSLP
+  3391 F 3390 F / LSEND *
+  3389 F 4129 T 3391 F 4130 T 2252 4131 T 256 4132 T 3 SYS C !
+  4135 F 3392 T 4137 F 3393 T
+  2252 F 46 E LSNX *
+  3392 F 2 E LSDIR *
+  3393 F 14 PADNC C "  "
+  2252 ISFASTA C LSPLAIN J
+  83 FGX C 2252 PUTS C RST C CR LSNX B
+:LSPLAIN
+  2252 PUTS C CR LSNX B
+:LSDIR
+  "             -  " 63 FGX C 2252 PUTS C "/" RST C CR
+:LSNX
+  3391 PSTO LSLP B
+:LSEND
+  3389 F 4129 T 4 SYS C ! R
+:LSERR
+  576 4134 F EFAIL C R
+:ISFASTA                   # (name -- flag)  .fa .fasta .fna .fas .dna .seq
+  D STRLEN C D 3 L ISFNO *
+  A
+  D 3 S  3892  STREQ C ISFYES *
+  D 6 S  3896  STREQ C ISFYES *
+  D 4 S  3903  STREQ C ISFYES *
+  D 4 S  3908  STREQ C ISFYES *
+  D 4 S  3913  STREQ C ISFYES *
+  D 4 S  3918  STREQ C ISFYES *
+  ! 0 R
+:ISFYES
+  ! 1 R
+:ISFNO
+  ] 0 R
+
+:C_PWD
+  1176 4129 T 256 4130 T 15 SYS C ! 1176 PUTS C CR R
+:C_CD
+  3310 F 2 L CDHOME *
+  1 544 A F 576 600 STRNCPY C CDGO B
+:CDHOME
+  3707 4129 T 576 4130 T 600 4131 T 23 SYS C CDGO *
+  EPRE C "HOME is not set" EEND C R
+:CDGO
+  576 4129 T 14 SYS C CDOK *
+  576 4134 F EFAIL C
+:CDOK
+  R
+
+# =====================================================================
+#  help, main loop
+# =====================================================================
+:C_HELP
+  BOLDON C 214 FGX C "GATC DNA toolkit" RST C DIM C " - every tool is GATC assembly" RST C CR CR
+  "  info FILE                    records, length, base counts, GC% and GC skew" CR
+  "  view FILE [START] [LEN]      coloured bases, numbered rows of 60" CR
+  "  gc FILE [WINDOW]             GC% along the sequence as bars" CR
+  "  revcomp FILE [OUT]           reverse complement as FASTA (IUPAC aware)" CR
+  "  orf FILE [MINAA]             open reading frames ATG..stop, six frames (default 100 aa)" CR
+  "  translate FILE START END [-] protein of a region; - = reverse strand" CR
+  "  dis FILE [START] [COUNT]     codons as VM instructions, in paint's colours" CR
+  "  codon ACG                    one codon: colour, instruction, amino acid" CR
+  "  ls [DIR]  cd [DIR]  pwd  clear  help  exit      redirect: > file  >> file" CR CR
+  DIM C "Positions are 1-based. view, translate and dis jump straight to a position, which" RST C CR
+  DIM C "assumes the usual FASTA layout (one header, equal line widths). ORF frames are" RST C CR
+  DIM C "counted from the start of the + strand for both strands." RST C CR R
+
+:C_CLEAR
+  27 W "[H" 27 W "[2J" R
+:C_EXIT
+  1 3394 T R
+
+:MAIN
+  # ---- write the string table into memory (generated) ----
+  76 3395 T  73 3396 T  84 3397 T  32 3398 T  69 3399 T  81 3400 T  32 3401 T  65 3402 T   # opnames
+  68 3403 T  68 3404 T  32 3405 T  78 3406 T  79 3407 T  84 3408 T  32 3409 T  65 3410 T
+  66 3411 T  83 3412 T  32 3413 T  77 3414 T  73 3415 T  78 3416 T  32 3417 T  68 3418 T
+  69 3419 T  80 3420 T  84 3421 T  72 3422 T  32 3423 T  77 3424 T  65 3425 T  88 3426 T
+  32 3427 T  84 3428 T  85 3429 T  67 3430 T  75 3431 T  32 3432 T  68 3433 T  73 3434 T
+  86 3435 T  32 3436 T  80 3437 T  73 3438 T  67 3439 T  75 3440 T  32 3441 T  68 3442 T
+  85 3443 T  80 3444 T  32 3445 T  76 3446 T  69 3447 T  32 3448 T  71 3449 T  69 3450 T
+  32 3451 T  77 3452 T  85 3453 T  76 3454 T  32 3455 T  78 3456 T  69 3457 T  32 3458 T
+  82 3459 T  65 3460 T  78 3461 T  68 3462 T  32 3463 T  83 3464 T  72 3465 T  82 3466 T
+  32 3467 T  73 3468 T  78 3469 T  67 3470 T  32 3471 T  83 3472 T  72 3473 T  76 3474 T
+  32 3475 T  68 3476 T  82 3477 T  79 3478 T  80 3479 T  32 3480 T  78 3481 T  69 3482 T
+  71 3483 T  32 3484 T  71 3485 T  69 3486 T  84 3487 T  67 3488 T  32 3489 T  77 3490 T
+  79 3491 T  68 3492 T  32 3493 T  82 3494 T  79 3495 T  84 3496 T  32 3497 T  74 3498 T
+  78 3499 T  90 3500 T  32 3501 T  78 3502 T  73 3503 T  80 3504 T  32 3505 T  68 3506 T
+  69 3507 T  67 3508 T  32 3509 T  88 3510 T  79 3511 T  82 3512 T  32 3513 T  79 3514 T
+  86 3515 T  69 3516 T  82 3517 T  32 3518 T  83 3519 T  87 3520 T  65 3521 T  80 3522 T
+  32 3523 T  83 3524 T  84 3525 T  79 3526 T  82 3527 T  69 3528 T  32 3529 T  80 3530 T
+  83 3531 T  84 3532 T  79 3533 T  32 3534 T  66 3535 T  79 3536 T  79 3537 T  76 3538 T
+  32 3539 T  85 3540 T  78 3541 T  68 3542 T  69 3543 T  82 3544 T  32 3545 T  84 3546 T
+  83 3547 T  87 3548 T  80 3549 T  32 3550 T  79 3551 T  78 3552 T  69 3553 T  32 3554 T
+  90 3555 T  69 3556 T  82 3557 T  79 3558 T  32 3559 T  67 3560 T  82 3561 T  32 3562 T
+  73 3563 T  78 3564 T  86 3565 T  32 3566 T  83 3567 T  73 3568 T  71 3569 T  78 3570 T
+  32 3571 T  78 3572 T  82 3573 T  79 3574 T  76 3575 T  76 3576 T  32 3577 T  77 3578 T
+  65 3579 T  68 3580 T  68 3581 T  32 3582 T  82 3583 T  68 3584 T  82 3585 T  79 3586 T
+  80 3587 T  32 3588 T  84 3589 T  79 3590 T  82 3591 T  32 3592 T  68 3593 T  68 3594 T
+  82 3595 T  79 3596 T  80 3597 T  32 3598 T  82 3599 T  70 3600 T  82 3601 T  79 3602 T
+  77 3603 T  32 3604 T  68 3605 T  68 3606 T  85 3607 T  80 3608 T  32 3609 T  72 3610 T
+  65 3611 T  76 3612 T  84 3613 T  32 3614 T  81 3615 T  85 3616 T  73 3617 T  84 3618 T
+  32 3619 T  78 3620 T  79 3621 T  80 3622 T  32 3623 T  80 3624 T  85 3625 T  84 3626 T
+  78 3627 T  32 3628 T  74 3629 T  90 3630 T  32 3631 T  73 3632 T  78 3633 T  32 3634 T
+  80 3635 T  85 3636 T  84 3637 T  67 3638 T  32 3639 T  83 3640 T  85 3641 T  66 3642 T
+  32 3643 T  79 3644 T  82 3645 T  32 3646 T  82 3647 T  69 3648 T  84 3649 T  32 3650 T
+  65 3651 T  78 3652 T  68 3653 T  32 3654 T  67 3655 T  65 3656 T  76 3657 T  76 3658 T
+  32 3659 T  74 3660 T  77 3661 T  80 3662 T  32 3663 T  76 3664 T  84 3665 T  32 3666 T
+  71 3667 T  84 3668 T  32 3669 T  70 3670 T  69 3671 T  84 3672 T  67 3673 T  72 3674 T
+  0 3675 T
+  65 3676 T  67 3677 T  71 3678 T  84 3679 T  0 3680 T   # bases
+  65 3681 T  67 3682 T  68 3683 T  69 3684 T  70 3685 T  71 3686 T  72 3687 T  73 3688 T   # aa1
+  75 3689 T  76 3690 T  77 3691 T  78 3692 T  80 3693 T  81 3694 T  82 3695 T  83 3696 T
+  84 3697 T  86 3698 T  87 3699 T  89 3700 T  42 3701 T  0 3702 T
+  47 3703 T  0 3704 T   # s_slash
+  46 3705 T  0 3706 T   # s_dot
+  72 3707 T  79 3708 T  77 3709 T  69 3710 T  0 3711 T   # s_HOME
+  100 3712 T  110 3713 T  97 3714 T  107 3715 T  105 3716 T  116 3717 T  0 3718 T   # s_dk
+  45 3719 T  0 3720 T   # s_minus
+  226 3721 T  150 3722 T  136 3723 T  226 3724 T  150 3725 T  136 3726 T  226 3727 T  150 3728 T   # bar
+  136 3729 T  226 3730 T  150 3731 T  136 3732 T  226 3733 T  150 3734 T  136 3735 T  226 3736 T
+  150 3737 T  136 3738 T  226 3739 T  150 3740 T  136 3741 T  226 3742 T  150 3743 T  136 3744 T
+  226 3745 T  150 3746 T  136 3747 T  226 3748 T  150 3749 T  136 3750 T  226 3751 T  150 3752 T
+  136 3753 T  226 3754 T  150 3755 T  136 3756 T  226 3757 T  150 3758 T  136 3759 T  226 3760 T
+  150 3761 T  136 3762 T  226 3763 T  150 3764 T  136 3765 T  226 3766 T  150 3767 T  136 3768 T
+  226 3769 T  150 3770 T  136 3771 T  226 3772 T  150 3773 T  136 3774 T  226 3775 T  150 3776 T
+  136 3777 T  226 3778 T  150 3779 T  136 3780 T  226 3781 T  150 3782 T  136 3783 T  226 3784 T
+  150 3785 T  136 3786 T  226 3787 T  150 3788 T  136 3789 T  226 3790 T  150 3791 T  136 3792 T
+  226 3793 T  150 3794 T  136 3795 T  226 3796 T  150 3797 T  136 3798 T  226 3799 T  150 3800 T
+  136 3801 T  226 3802 T  150 3803 T  136 3804 T  226 3805 T  150 3806 T  136 3807 T  226 3808 T
+  150 3809 T  136 3810 T  226 3811 T  150 3812 T  136 3813 T  226 3814 T  150 3815 T  136 3816 T
+  226 3817 T  150 3818 T  136 3819 T  226 3820 T  150 3821 T  136 3822 T  226 3823 T  150 3824 T
+  136 3825 T  226 3826 T  150 3827 T  136 3828 T  226 3829 T  150 3830 T  136 3831 T  226 3832 T
+  150 3833 T  136 3834 T  226 3835 T  150 3836 T  136 3837 T  226 3838 T  150 3839 T  136 3840 T
+  226 3841 T  150 3842 T  136 3843 T  226 3844 T  150 3845 T  136 3846 T  226 3847 T  150 3848 T
+  136 3849 T  226 3850 T  150 3851 T  136 3852 T  226 3853 T  150 3854 T  136 3855 T  226 3856 T
+  150 3857 T  136 3858 T  226 3859 T  150 3860 T  136 3861 T  226 3862 T  150 3863 T  136 3864 T
+  226 3865 T  150 3866 T  136 3867 T  226 3868 T  150 3869 T  136 3870 T  0 3871 T
+  32 3872 T  114 3873 T  101 3874 T  118 3875 T  101 3876 T  114 3877 T  115 3878 T  101 3879 T   # _s0
+  32 3880 T  99 3881 T  111 3882 T  109 3883 T  112 3884 T  108 3885 T  101 3886 T  109 3887 T
+  101 3888 T  110 3889 T  116 3890 T  0 3891 T
+  46 3892 T  102 3893 T  97 3894 T  0 3895 T   # _s1
+  46 3896 T  102 3897 T  97 3898 T  115 3899 T  116 3900 T  97 3901 T  0 3902 T   # _s2
+  46 3903 T  102 3904 T  110 3905 T  97 3906 T  0 3907 T   # _s3
+  46 3908 T  102 3909 T  97 3910 T  115 3911 T  0 3912 T   # _s4
+  46 3913 T  100 3914 T  110 3915 T  97 3916 T  0 3917 T   # _s5
+  46 3918 T  115 3919 T  101 3920 T  113 3921 T  0 3922 T   # _s6
+  105 3923 T  110 3924 T  102 3925 T  111 3926 T  0 3927 T   # _s7
+  118 3928 T  105 3929 T  101 3930 T  119 3931 T  0 3932 T   # _s8
+  103 3933 T  99 3934 T  0 3935 T   # _s9
+  114 3936 T  101 3937 T  118 3938 T  99 3939 T  111 3940 T  109 3941 T  112 3942 T  0 3943 T   # _s10
+  111 3944 T  114 3945 T  102 3946 T  0 3947 T   # _s11
+  116 3948 T  114 3949 T  97 3950 T  110 3951 T  115 3952 T  108 3953 T  97 3954 T  116 3955 T   # _s12
+  101 3956 T  0 3957 T
+  100 3958 T  105 3959 T  115 3960 T  0 3961 T   # _s13
+  99 3962 T  111 3963 T  100 3964 T  111 3965 T  110 3966 T  0 3967 T   # _s14
+  108 3968 T  115 3969 T  0 3970 T   # _s15
+  99 3971 T  100 3972 T  0 3973 T   # _s16
+  112 3974 T  119 3975 T  100 3976 T  0 3977 T   # _s17
+  99 3978 T  108 3979 T  101 3980 T  97 3981 T  114 3982 T  0 3983 T   # _s18
+  104 3984 T  101 3985 T  108 3986 T  112 3987 T  0 3988 T   # _s19
+  101 3989 T  120 3990 T  105 3991 T  116 3992 T  0 3993 T   # _s20
+  113 3994 T  117 3995 T  105 3996 T  116 3997 T  0 3998 T   # _s21
+  4138 F 18003 E FSOK *
+  4138 F 1 E FSOFF *
+  "dnakit needs GATCnux.py (version 4.2 or later) for file access." CR 1 Q
+:FSOFF
+  "dnakit reads files. Run it with --fs:" CR
+  "  python3 GATCnux.py run dnakit.aa --no-banner --fs --max-steps 2000000000" CR 1 Q
+:FSOK
+  TABLES C
+  TTYCHK C
+  3249 F LOOP J
+  BOLDON C 83 FGX C "  ~ GATC DNA toolkit ~" RST C DIM C "   info view gc revcomp orf translate dis codon   (help)" RST C CR CR
+:LOOP
+  CLRSTK C
+  TTYCHK C
+  PROMPT C
+  READLINE C BYE *
+  TOKENIZE C
+  3310 F 3312 F O LPNEXT J
+  3312 F RUNPLAIN J
+  3314 F 4129 T 3312 F - 4130 T 20 SYS C REDOK *
+  3712 3302 T 3314 F 4134 F EFAIL C
+  LPNEXT B
+:REDOK
+  TTYCHK C
+  DISPATCH C
+  0 4129 T 20 SYS C !
+  LPNEXT B
+:RUNPLAIN
+  DISPATCH C
+:LPNEXT
+  3394 F BYE *
+  LOOP B
+:BYE
+  3249 F BYEQ J
+  3394 F BYEQ *
+  CR
+:BYEQ
+  0 Q
+
+:PROMPT
+  3249 F PRRET J
+  1176 4129 T 256 4130 T 15 SYS C !
+  3248 F PRPLAIN J
+  27 W "[1;32m" "dnakit" 27 W "[0m:" 27 W "[1;34m" 1176 PUTS C 27 W "[0m" "$ " R
+:PRPLAIN
+  "dnakit:" 1176 PUTS C "$ " R
+:PRRET
+  R
+
+:ISCMD
+  3302 F STREQ C R
+:DISPATCH
+  3310 F DSNONE J
+  544 F 3302 T
+  0 3303 T
+   3923  ISCMD C C_INFO *
+   3928  ISCMD C C_VIEW *
+   3933  ISCMD C C_GC *
+   3936  ISCMD C C_REVCOMP *
+   3944  ISCMD C C_ORF *
+   3948  ISCMD C C_TRANSLATE *
+   3958  ISCMD C C_DIS *
+   3962  ISCMD C C_CODON *
+   3968  ISCMD C C_LS *
+   3971  ISCMD C C_CD *
+   3974  ISCMD C C_PWD *
+   3978  ISCMD C C_CLEAR *
+   3984  ISCMD C C_HELP *
+   3989  ISCMD C C_EXIT *
+   3994  ISCMD C C_EXIT *
+  EPRE C "command not found (type help)" EEND C
+:DSNONE
+  R
