@@ -1,0 +1,2777 @@
+# =====================================================================
+# paint.aa  --  GATC PAINT: a 64-colour pixel painter for the GATC VM
+#
+#   python3 GATCnux.py run paint.aa --no-banner --tty --fs --max-steps 2000000000
+#
+# 64 codons = 64 colours.  A codon's three bases are its red, green and blue
+# levels (A 0, C 85, G 170, T 255), so the colour number is the codon's own
+# 6-bit value - and every colour is also one of the VM's 64 instructions.
+# Type three bases (e.g. G C A) to pick a colour.
+#
+# Two resolutions, set separately:
+#   picture  W x H  the image itself, 1x1 .. 1024x1024 (what .fa / .bmp save)
+#   screen   W x H  the drawing area on the terminal, in screen pixels
+#                   (one character = 1 pixel wide, 2 tall), up to what fits
+# "fit" stretches the picture over the screen, each axis on its own;
+# "1:1" shows it at true size and scrolls.  A FASTA file is read once into
+# memory, so changing the picture width re-wraps the DNA instantly - repeats
+# whose period matches the width line up into stripes.
+#
+# Pixels live in the VM's file-backed byte space (FETCH/STORE at 65536+),
+# one byte per pixel, so pictures are not limited by the 64K cells of RAM.
+# Needs GATCnux.py 4.4 or later (--tty; --fs for saving and loading).
+#
+# Generated from paint.tpl by gen_aa.py.  No negative literals (DNA-safe).
+# Memory map (generated):
+#       0.. 4095  OB
+#    4160..20159  FSTACK
+#   20160..23239  SCAN
+#   23240..23287  NB
+#   23288..23351  PATH
+#   23352..23415  XT
+#   23416..23463  VNAME
+#   23464..23591  BT
+#   23592..23639  HDR
+#   23640..23663  SB
+#   23664..23743  PB
+#   23744..23935  CB
+#   23936..24127  BGRT
+#   24128..24329  variables (202)
+#   strings (119);  free: 0 low + 39671 high cells   (4096..4159 = device cells)
+# =====================================================================
+
+
+
+
+
+MAIN B
+
+# =====================================================================
+#  bridges
+# =====================================================================
+:TSYS                      # (cmd -- status)
+  4144 T 4148 F R
+:FSYS                      # (cmd -- status)
+  4128 T 4133 F R
+
+# =====================================================================
+#  output buffer: everything on screen goes through OB, one write per frame
+#  ($obfd = 0: the terminal, else a file handle from the fs bridge)
+# =====================================================================
+:OBC                       # (byte --)  no bounds check: callers use OBROOM
+  24128 F T 24128 PSTO R
+:OBROOM                    # make sure there is room for ~60 more bytes
+  24128 F 0 S 3000 L OBRR *
+  OBFLUSH B
+:OBRR
+  R
+:OBFLUSH
+  24128 F 0 S D OBFZ J
+  24129 F OBFILE *
+  0 4145 T 4146 T 3 TSYS C !
+  0 24128 T R
+:OBFILE
+  0 4130 T 4131 T 24129 F 4129 T 11 FSYS C !
+  0 24128 T R
+:OBFZ
+  ! R
+:OBS                       # (addr --)  append a NUL-terminated string
+  OBROOM C
+:OBSLP
+  D F OBSEND J
+  D F OBC C + OBSLP B
+:OBSEND
+  ! R
+:OBN                       # (n --)  decimal
+  D 10 L OBN1 *
+  D 10 V OBN C
+  10 MOD
+:OBN1
+  48 A OBC C R
+:OBSP                      # (k --)  k spaces
+  D 1 L OBSPE *
+  32 OBC C - OBSP B
+:OBSPE
+  ! R
+:ESC                       # ESC [
+  27 OBC C 91 OBC C R
+:GOTO                      # (row col --)
+  SWAP ESC C OBN C 59 OBC C OBN C 72 OBC C R
+:RESET                     # plain colours
+  ESC C 48 OBC C 109 OBC C 999 24130 T 999 24131 T R
+:TG                        # (row col --)  move there with plain colours
+  GOTO C RESET C R
+:XTOUT                     # (colour --)  its xterm number, 2 or 3 digits
+  23352 A F
+  D 100 L XT2 *
+  D 100 V 48 A 24128 F T 24128 PSTO
+:XT2
+  D 10 V 10 MOD 48 A 24128 F T 24128 PSTO 10 MOD 48 A 24128 F T 24128 PSTO R
+:FG5                       # "38;5;"
+  51 24128 F T 24128 PSTO 56 24128 F T 24128 PSTO 59 24128 F T 24128 PSTO 53 24128 F T 24128 PSTO 59 24128 F T 24128 PSTO R
+:BG5                       # "48;5;"
+  52 24128 F T 24128 PSTO 56 24128 F T 24128 PSTO 59 24128 F T 24128 PSTO 53 24128 F T 24128 PSTO 59 24128 F T 24128 PSTO R
+:SETFG                     # (colour --)  only emitted when it changes
+  D 24130 F E SFSAME *
+  D 24130 T
+  27 24128 F T 24128 PSTO 91 24128 F T 24128 PSTO FG5 C XTOUT C 109 24128 F T 24128 PSTO R
+:SFSAME
+  ! R
+:SETBG
+  D 24131 F E SFSAME *
+  D 24131 T
+  27 24128 F T 24128 PSTO 91 24128 F T 24128 PSTO BG5 C XTOUT C 109 24128 F T 24128 PSTO R
+:COLORS                    # (fg bg --)  one escape for whatever changed
+  D 24131 F E CLBGSAME *
+  OVER 24130 F E CLFGSAME *
+  D 24131 T OVER 24130 T
+  27 24128 F T 24128 PSTO 91 24128 F T 24128 PSTO SWAP FG5 C XTOUT C 59 24128 F T 24128 PSTO BG5 C XTOUT C 109 24128 F T 24128 PSTO R
+:CLFGSAME
+  NIP SETBG B
+:CLBGSAME
+  ! SETFG B
+:GREY                      # dim grey text
+  ESC C  24679  OBS C 999 24130 T 999 24131 T R
+:BOLD
+  ESC C  24691  OBS C R
+
+# =====================================================================
+#  colours
+# =====================================================================
+:XTINIT                    # colour -> xterm-256 index (levels 0 95 175 255)
+  0 24132 T
+:XTLP
+  24132 F 64 / XTEND *
+  24132 F 4 > LV C 36 M
+  24132 F 2 > 3 P LV C 6 M A
+  24132 F 3 P LV C A 16 A
+  24132 F 23352 A T
+  24132 PSTO XTLP B
+:XTEND
+  R
+:LV                        # (0..3 -- 0 1 3 5)
+  D 2 / LVHI *
+  R
+:LVHI
+  D A - R
+
+:CONTRAST                  # (colour -- black or white)
+  D 4 > 2 M OVER 2 > 3 P 5 M A SWAP 3 P A
+  12 / CTBLK *
+  63 R
+:CTBLK
+  0 R
+
+:CODON                     # (colour --)  three base letters, each in its own hue
+  24133 T
+  24133 F 4 > BASEOUT C
+  24133 F 2 > 3 P BASEOUT C
+  24133 F 3 P BASEOUT C R
+:BASEOUT                   # (base --)
+  D BASECOL C SETFG C
+  24611 A F OBC C R
+:BASECOL                   # (base -- colour)  A blue CCT, C amber TGA, G green CTC, T coral TCC
+  D BCA J
+  D 1 E BCC *
+  D 2 E BCG *
+  ! 53 R
+:BCA
+  ! 23 R
+:BCC
+  ! 56 R
+:BCG
+  ! 29 R
+
+:OPNAME                    # (colour --)  the instruction this codon encodes
+  24330 SWAP
+:ONLP
+  D ONGO J
+  SWAP
+:ONSKIP
+  D F 32 = ONNEXT1 *
+  + SWAP - ONLP B
+:ONNEXT1
+  + ONSKIP B
+:ONGO
+  !
+:ONPR
+  D F D 32 = OVER BOOL P ONPC *
+  ] R
+:ONPC
+  OBC C + ONPR B
+
+:HEXRGB                    # (colour --)  #RRGGBB
+  35 OBC C
+  D 4 > HEX85 C D 2 > 3 P HEX85 C 3 P HEX85 C R
+:HEX85                     # (level --)  00 55 AA FF
+  D HX0 J
+  D 1 E HX5 *
+  D 2 E HXA *
+  !  24694  OBS C R
+:HX0
+  !  24697  OBS C R
+:HX5
+  !  24700  OBS C R
+:HXA
+  !  24703  OBS C R
+
+
+# =====================================================================
+#  the picture: W x H bytes at PIX (file offset 16), header at offsets 0-3
+#  file layout: 0 header | 16 picture (up to 1 MiB) | SCROFF scratch | SEQOFF DNA
+# =====================================================================
+:HSET                      # (a1 a2 a3 --)  arguments for a bulk command
+  4106 T 4098 T 4097 T R
+:HOST                      # (cmd -- status)
+  4096 T 4102 F R
+:SNAPN                     # (len --)  undo step: one copy of file[0, len)
+  0 SWAP 0 HSET C 12 HOST C ! R
+:SNAP                      # undo step for the picture as it is now
+  24134 F 16 A SNAPN B
+:DSNAP                     # undo step before drawing: the picture stops being "the file"
+  SNAP C 0 24135 T R
+:SETNP
+  24136 F 24137 F M 24134 T R
+:WRITEHDR
+  24136 F 8 > 65536 T 24136 F 255 P 65536 + T
+  24137 F 8 > 65536 2 A T 24137 F 255 P 65536 3 A T R
+:READHDR                   # ( -- changed)  picture size from the header (after undo / redo)
+  65536 F 8 < 65536 + F O 24138 T
+  65536 2 A F 8 < 65536 3 A F O 24139 T
+  24138 F 24136 F = 24139 F 24137 F = O
+  24138 F 1 MAX 24136 T 24139 F 1 MAX 24137 T SETNP C R
+
+:GETPX                     # (x y -- colour)
+  24136 F M A 65552 A F R
+:SETPX                     # (colour x y --)  ignores points outside the picture
+  24140 T 24141 T
+  24141 F 0 L SPXOUT *
+  24141 F 24136 F / SPXOUT *
+  24140 F 0 L SPXOUT *
+  24140 F 24137 F / SPXOUT *
+  24140 F 24136 F M 24141 F A 65552 A T
+  1 24142 T
+  24140 F PXDIRTY B
+:SPXOUT
+  ! R
+:PXDIRTY                   # (picture row --)  mark the screen rows that show it
+  24143 F S D 0 L PXDNO *
+  D 24144 F M 24145 F A - 24145 F V 24146 T
+  + 24144 F M 24145 F A - 24145 F V - 24146 F MAX
+  2 V DIRTY C 24146 F 2 V DIRTY B
+:PXDNO
+  ! R
+:DIRTY                     # (screen row --)
+  D 24147 F MIN 24147 T 24148 F MAX 24148 T R
+:ALLDIRTY
+  0 24147 T 24149 F - 24148 T R
+
+# =====================================================================
+#  layout: screen size, terminal size, picture -> screen mapping
+#  a screen pixel (sx, h) shows picture pixel
+#     (vx + sx * mxn / mxd,  vy + h * myn / myd)
+#  fit: mxn/mxd = W/screen width, myn/myd = H/screen height;  1:1: 1/1
+# =====================================================================
+:TERMSIZE                  # $tc $tr, and the biggest screen that fits: $maxw $maxh
+  4 TSYS C ! 4149 F 40 MAX 24150 T 4150 F 12 MAX 24151 T
+  24150 F 20 S 24152 T 24151 F 4 S 2 M 24153 T R
+:LAYOUT
+  TERMSIZE C
+  24154 F 24152 F MIN 24155 T 24156 F 24153 F MIN 24157 T
+  24158 F LYFIT *
+  24155 F 24136 F MIN 24155 T 24157 F 24137 F MIN 24157 T
+  1 24159 T 1 24160 T 1 24145 T 1 24144 T
+  CLAMPV C LYDONE B
+:LYFIT
+  0 24161 T 0 24143 T
+  24136 F 24159 T 24155 F 24160 T 24137 F 24145 T 24157 F 24144 T
+:LYDONE
+  24159 F 24160 F V 24162 T 24159 F 24160 F MOD 24163 T
+  24155 F 24164 T 24157 F + 2 V 24149 T
+  24164 F 4 A 24165 T
+  24149 F 3 A 23 MAX 24151 F - MIN 24166 T 24166 F + 24167 T
+  24168 F 24136 F - MIN 24168 T 24169 F 24137 F - MIN 24169 T
+  24170 F 24136 F - MIN 24170 T 24171 F 24137 F - MIN 24171 T R
+:CLAMPV                    # keep the 1:1 view inside the picture
+  24161 F 24136 F 24155 F S MIN 0 MAX 24161 T
+  24143 F 24137 F 24157 F S MIN 0 MAX 24143 T R
+:FOLLOW                    # 1:1: scroll so the cursor stays on screen
+  24158 F FORET *
+  24161 F 24172 T 24143 F 24173 T
+  24168 F 24161 F L FOX *
+  24168 F 24161 F 24155 F A L FOY *
+:FOX
+  24168 F 24155 F 2 V S 24161 T
+:FOY
+  24169 F 24143 F L FOY2 *
+  24169 F 24143 F 24157 F A L FOCL *
+:FOY2
+  24169 F 24157 F 2 V S 24143 T
+:FOCL
+  CLAMPV C
+  24161 F 24172 F = 24143 F 24173 F = O FORET J
+  ALLDIRTY C
+:FORET
+  R
+:CURCELL                   # screen cells of the cursor and the anchor (for shrunk pictures)
+  24168 F 24161 F S 24160 F M 24159 F A - 24159 F V 24174 T
+  24169 F 24143 F S 24144 F M 24145 F A - 24145 F V 24175 T
+  24170 F 24161 F S 24160 F M 24159 F A - 24159 F V 24176 T
+  24171 F 24143 F S 24144 F M 24145 F A - 24145 F V 24177 T R
+
+# =====================================================================
+#  drawing on the screen
+# =====================================================================
+:BG49                      # default background (outside the picture)
+  27 24128 F T 24128 PSTO 91 24128 F T 24128 PSTO 52 24128 F T 24128 PSTO 57 24128 F T 24128 PSTO 109 24128 F T 24128 PSTO 999 24131 T R
+:DRAWROW                   # (screen row)  two screen pixel rows as half blocks
+  24178 T
+  OBROOM C
+  24178 F 2 A 2 GOTO C
+  24178 F 2 M 24179 T
+  24179 F 24145 F M 24144 F V 24143 F A 24180 T
+  24179 F + 24145 F M 24144 F V 24143 F A 24181 T
+  24180 F 24137 F / DRBLROW *
+  24180 F 24136 F M 65552 A 24182 T
+  24179 F + 24157 F / DRB1OUT *
+  24181 F 24137 F / DRB1OUT *
+  24181 F 24136 F M 65552 A 24183 T DRB1D B
+:DRB1OUT
+  0 24183 T
+:DRB1D
+  24180 F 24169 F E 24179 F 24175 F E O 24184 T
+  24181 F 24169 F E 24179 F + 24175 F E O 24183 F BOOL P 24185 T
+  0 24186 T 0 24187 T
+  24188 F DRNOAR J
+  24180 F 24171 F E 24179 F 24177 F E O 24186 T
+  24181 F 24171 F E 24179 F + 24177 F E O 24183 F BOOL P 24187 T
+:DRNOAR
+  0 24189 T 24161 F 24190 T 0 24191 T
+:DRLP
+  24189 F 24164 F / DREND *
+  24190 F 24136 F / DRBLANK *
+  24182 F 24190 F A F 24192 T
+  24183 F DRBOUT J
+  24183 F 24190 F A F 24193 T DRHAVE B
+:DRBOUT
+  999 24193 T
+:DRHAVE
+  24184 F 24185 F O DRNOC J
+  24190 F 24168 F E 24189 F 24174 F E O DRNOC J
+  24184 F DRC1 J
+  24192 F CONTRAST C 24192 T
+:DRC1
+  24185 F DRNOC J
+  24193 F CONTRAST C 24193 T
+:DRNOC
+  24186 F 24187 F O DRNOA J
+  24190 F 24170 F E 24189 F 24176 F E O DRNOA J
+  24186 F DRA1 J
+  24192 F CONTRAST C 24192 T
+:DRA1
+  24187 F DRNOA J
+  24193 F CONTRAST C 24193 T
+:DRNOA
+  24189 F 7 P DRROOM J
+:DRCELL
+  24193 F 999 E DRHALF *
+  24192 F 24193 F E DRSAME *
+  24192 F 24193 F COLORS C
+  226 24128 F T 24128 PSTO 150 24128 F T 24128 PSTO 128 24128 F T 24128 PSTO DRNX B
+:DRSAME
+  24192 F SETBG C 32 24128 F T 24128 PSTO DRNX B
+:DRHALF                    # the lower half is past the bottom of the picture
+  24192 F SETFG C BG49 C 226 24128 F T 24128 PSTO 150 24128 F T 24128 PSTO 128 24128 F T 24128 PSTO DRNX B
+:DRBLANK
+  BG49 C 32 24128 F T 24128 PSTO
+:DRNX
+  24189 PSTO
+  24190 F 24162 F A 24190 T
+  24191 F 24163 F A D 24191 T 24160 F L DRLP *
+  24191 F 24160 F S 24191 T 24190 PSTO DRLP B
+:DRROOM
+  OBROOM C DRCELL B
+:DRBLROW                   # the whole row is past the bottom of the picture
+  BG49 C 0 24189 T
+:DRBLLP
+  24189 F 24164 F / DREND *
+  24189 F 63 P DRBLSP *
+  OBROOM C
+:DRBLSP
+  32 24128 F T 24128 PSTO 24189 PSTO DRBLLP B
+:DREND
+  R
+
+:FLUSHDIRTY
+  24148 F 24149 F - MIN 24148 T
+  24147 F 0 MAX 24147 T
+  24147 F 24148 F G FDNONE *
+  CURCELL C
+  24147 F 24194 T
+:FDLP
+  24194 F 24148 F G FDNONE *
+  24194 F DRAWROW C 24194 PSTO FDLP B
+:FDNONE
+  99999 24147 T 0 1 S 24148 T R
+
+:FRAME                     # border sized to the screen, title, key hints
+  RESET C ESC C  24706  OBS C
+  1 1 GOTO C GREY C 24647 OBS C
+  24164 F 14 L FRNOT *
+  24663 OBS C RESET C BOLD C 56 SETFG C  24709  OBS C RESET C GREY C 13 24132 T FRTOP B
+:FRNOT
+  0 24132 T
+:FRTOP
+  24132 F 24164 F / FRTE *
+  OBROOM C 24663 OBS C 24132 PSTO FRTOP B
+:FRTE
+  24651 OBS C
+  0 24132 T
+:FRSIDE
+  24132 F 24149 F / FRSE *
+  OBROOM C
+  24132 F 2 A 1 GOTO C 24667 OBS C
+  24132 F 2 A 24164 F 2 A GOTO C 24667 OBS C
+  24132 PSTO FRSIDE B
+:FRSE
+  24149 F 2 A 1 GOTO C 24655 OBS C
+  0 24132 T
+:FRBOT
+  24132 F 24164 F / FRBE *
+  OBROOM C 24663 OBS C 24132 PSTO FRBOT B
+:FRBE
+  24659 OBS C RESET C
+:HINTS
+  24167 F 1 TG C ESC C  24722  OBS C GREY C
+  OBFLUSH C "arrows move  space paint  ACGT colour  W picture  # screen  ( ) width  H help"
+  RESET C R
+
+:PLINE                     # (row --)  clear a panel line and start it in grey
+  OBROOM C 24165 F TG C ESC C 75 OBC C GREY C R
+:OBSZ                      # (w h --)  "WxH"
+  SWAP OBN C 120 OBC C OBN C R
+:OBPCT                     # (screen picture --)  screen * 100 / picture, as a percentage
+  SWAP 100 M SWAP V OBN C 37 OBC C R
+
+:PANEL                     # palette and info, right of the screen
+  1 PLINE C  24725  OBS C RESET C BOLD C 24136 F 24137 F OBSZ C RESET C
+  10 PLINE C  24730  OBS C RESET C BOLD C 24155 F 24157 F OBSZ C RESET C
+  22 PLINE C
+  24158 F PNFIT *
+   24735  OBS C RESET C 24161 F OBN C 44 OBC C 24143 F OBN C PNZD B
+:PNFIT
+   24743  OBS C RESET C 24155 F 24136 F OBPCT C
+  24155 F 100 M 24136 F V 24157 F 100 M 24137 F V E PNZD *
+  120 OBC C 24157 F 24137 F OBPCT C
+:PNZD
+  24195 F 24196 F E PALEND *
+  24195 F 24196 T
+  0 24132 T
+:PALROW
+  24132 F 64 / PALEND *
+  24132 F 7 P PALNOGO *
+  OBROOM C
+  24132 F 3 > 2 A 24165 F GOTO C
+:PALNOGO
+  24132 F SETBG C
+  24132 F 24195 F E PALSEL *
+  32 OBC C 32 OBC C PALNX B
+:PALSEL
+  24132 F CONTRAST C SETFG C 91 OBC C 93 OBC C
+:PALNX
+  24132 PSTO PALROW B
+:PALEND
+  11 PLINE C  24748  OBS C 24195 F SETBG C 4 OBSP C RESET C
+  12 PLINE C  24756  OBS C RESET C BOLD C 24195 F CODON C RESET C
+  13 PLINE C  24764  OBS C RESET C 24195 F OPNAME C
+  14 PLINE C  24772  OBS C RESET C 24195 F HEXRGB C
+  15 PLINE C  24780  OBS C RESET C 24195 F AAOF C D AA3 C 32 OBC C 24616 A F OBC C
+  24197 F VPANEL *
+  16 PLINE C  24788  OBS C RESET C TOOLNAME C
+  17 PLINE C  24796  OBS C RESET C 24198 F OBN C
+  18 PLINE C  24804  OBS C RESET C
+  24199 F PNMIR1 *
+   24812  OBS C PNMIRD B
+:PNMIR1
+  24199 F 1 E PNMIR2 *
+   24816  OBS C PNMIRD B
+:PNMIR2
+   24822  OBS C
+:PNMIRD
+  19 PLINE C  24833  OBS C RESET C
+  24200 F PNPEN *
+   24841  OBS C PNPEND B
+:PNPEN
+  56 SETFG C  24844  OBS C RESET C
+:PNPEND
+  20 PLINE C  24849  OBS C RESET C
+  24201 F PNRB *
+   24812  OBS C PNRBD B
+:PNRB
+   24857  OBS C
+:PNRBD
+  21 PLINE C  24860  OBS C RESET C 24168 F OBN C 44 OBC C 24169 F OBN C
+  RESET C R
+:TOOLNAME
+  24188 F TNPEN J
+  24188 F 1 E TNLINE *
+  24188 F 2 E TNRECT *
+  24188 F 3 E TNBOX *
+   24868  OBS C R
+:TNPEN
+   24875  OBS C R
+:TNLINE
+   24879  OBS C R
+:TNRECT
+   24884  OBS C R
+:TNBOX
+   24889  OBS C R
+
+:MSG                       # start the message line
+  24166 F 1 TG C ESC C  24722  OBS C R
+:FULLDRAW
+  999 24196 T
+  FRAME C ALLDIRTY C FLUSHDIRTY C PANEL C OBFLUSH C R
+:RELAYOUT                  # after a size change: new layout, whole screen
+  LAYOUT C FOLLOW C FULLDRAW B
+
+# =====================================================================
+#  pen, brush, mirrors
+# =====================================================================
+:STAMP                     # (x y --)  brush at x,y and its mirror images
+  24202 T 24203 T
+  24201 F STNORB J
+  24195 F + 63 P 24195 T
+:STNORB
+  24203 F 24202 F BRUSH C
+  24199 F STEND J
+  24136 F - 24203 F S 24202 F BRUSH C
+  24199 F 1 E STEND *
+  24203 F 24137 F - 24202 F S BRUSH C
+  24136 F - 24203 F S 24137 F - 24202 F S BRUSH C
+:STEND
+  R
+:BRUSH                     # (x y --)  a bsize x bsize square
+  24198 F - 2 V D 24204 T
+  S 24205 T 24204 F S 24206 T
+  0 24207 T
+:BRJ
+  24207 F 24198 F / BREND *
+  0 24208 T
+:BRI
+  24208 F 24198 F / BRNJ *
+  24195 F 24206 F 24208 F A 24205 F 24207 F A SETPX C
+  24208 PSTO BRI B
+:BRNJ
+  24207 PSTO BRJ B
+:BREND
+  R
+:PLOTM                     # (x y --)  one pixel plus mirror images (box, spray)
+  24209 T 24210 T
+  24195 F 24210 F 24209 F SETPX C
+  24199 F PMEND J
+  24195 F 24136 F - 24210 F S 24209 F SETPX C
+  24199 F 1 E PMEND *
+  24195 F 24210 F 24137 F - 24209 F S SETPX C
+  24195 F 24136 F - 24210 F S 24137 F - 24209 F S SETPX C
+:PMEND
+  R
+
+# =====================================================================
+#  shapes: Bresenham line, rectangle, filled box, midpoint circle
+# =====================================================================
+:LINE                      # (x0 y0 x1 y1 --)
+  24211 T 24212 T 24213 T 24214 T
+  24212 F 24214 F S ABS 24215 T
+  24211 F 24213 F S ABS ~ 24216 T
+  24214 F 24212 F L LSXP *
+  0 1 S 24217 T LSXD B
+:LSXP
+  1 24217 T
+:LSXD
+  24213 F 24211 F L LSYP *
+  0 1 S 24218 T LSYD B
+:LSYP
+  1 24218 T
+:LSYD
+  24215 F 24216 F A 24219 T
+:LNLP
+  24214 F 24213 F STAMP C
+  24214 F 24212 F E 24213 F 24211 F E P LNEND *
+  24219 F 2 M 24220 T
+  24220 F 24216 F L LNY *
+  24219 F 24216 F A 24219 T 24214 F 24217 F A 24214 T
+:LNY
+  24220 F 24215 F G LNLP *
+  24219 F 24215 F A 24219 T 24213 F 24218 F A 24213 T
+  LNLP B
+:LNEND
+  R
+
+:RECT                      # anchor to cursor, outline
+  24170 F 24171 F 24168 F 24171 F LINE C
+  24168 F 24171 F 24168 F 24169 F LINE C
+  24168 F 24169 F 24170 F 24169 F LINE C
+  24170 F 24169 F 24170 F 24171 F LINE C R
+
+:BOX                       # anchor to cursor, filled
+  24170 F 24168 F MIN 24221 T 24170 F 24168 F MAX 24222 T
+  24171 F 24169 F MIN 24223 T 24171 F 24169 F MAX 24224 T
+:BXY
+  24223 F 24224 F G BXEND *
+  24221 F 24225 T
+:BXX
+  24225 F 24222 F G BXNY *
+  24225 F 24223 F PLOTM C 24225 PSTO BXX B
+:BXNY
+  24223 PSTO BXY B
+:BXEND
+  R
+
+:ISQRT                     # (n -- r)
+  24226 T 0
+:SQLP
+  D + D M 24226 F G SQEND *
+  + SQLP B
+:SQEND
+  R
+
+:CIRCLE                    # centre = anchor, through the cursor
+  24168 F 24170 F S D M 24169 F 24171 F S D M A ISQRT C 24227 T
+  0 24228 T 1 24227 F S 24229 T
+:CILP
+  24227 F 24228 F L CIEND *
+  24170 F 24227 F A 24171 F 24228 F A STAMP C
+  24170 F 24227 F S 24171 F 24228 F A STAMP C
+  24170 F 24227 F A 24171 F 24228 F S STAMP C
+  24170 F 24227 F S 24171 F 24228 F S STAMP C
+  24170 F 24228 F A 24171 F 24227 F A STAMP C
+  24170 F 24228 F S 24171 F 24227 F A STAMP C
+  24170 F 24228 F A 24171 F 24227 F S STAMP C
+  24170 F 24228 F S 24171 F 24227 F S STAMP C
+  24228 PSTO
+  24229 F 0 L CIPOS J
+  24229 F 24228 F 2 M A + 24229 T CILP B
+:CIPOS
+  24227 F - 24227 T
+  24229 F 24228 F 24227 F S 2 M A + 24229 T CILP B
+:CIEND
+  R
+
+:SPRAY                     # a puff of random dots around the cursor
+  14 24230 T
+:SPLP
+  24230 F SPEND J
+  24168 F 9 RAND A 4 S 24169 F 9 RAND A 4 S PLOTM C
+  24230 F - 24230 T SPLP B
+:SPEND
+  R
+
+# =====================================================================
+#  flood fill (scanline, explicit stack of y*W+x)
+# =====================================================================
+:FPUSH                     # (x y --)
+  24231 F 16000 / FPFULL *
+  24136 F M A 24231 F 4160 A T 24231 PSTO R
+:FPFULL
+  ] 1 24232 T R
+:FILL
+  24168 F 24169 F GETPX C 24233 T
+  24233 F 24195 F E FLRET *
+  0 24231 T 0 24232 T
+  24168 F 24169 F FPUSH C
+:FLPOP
+  24231 F FLRET J
+  24231 F - D 24231 T 4160 A F
+  D 24136 F MOD 24234 T 24136 F V 24235 T
+  24234 F 24235 F GETPX C 24233 F = FLPOP *
+:FLLEFT
+  24234 F FLSCAN J
+  24234 F - 24235 F GETPX C 24233 F = FLSCAN *
+  24234 F - 24234 T FLLEFT B
+:FLSCAN
+  0 24236 T 0 24237 T
+:FLRUN
+  24234 F 24136 F / FLPOP *
+  24234 F 24235 F GETPX C 24233 F = FLPOP *
+  24195 F 24234 F 24235 F SETPX C
+  24235 F FLBELOW J
+  24234 F 24235 F - GETPX C 24233 F E FLAY *
+  0 24236 T FLBELOW B
+:FLAY
+  24236 F FLBELOW *
+  24234 F 24235 F - FPUSH C 1 24236 T
+:FLBELOW
+  24235 F + 24137 F / FLNX *
+  24234 F 24235 F + GETPX C 24233 F E FLBY *
+  0 24237 T FLNX B
+:FLBY
+  24237 F FLNX *
+  24234 F 24235 F + FPUSH C 1 24237 T
+:FLNX
+  24234 PSTO FLRUN B
+:FLRET
+  R
+
+# =====================================================================
+#  maths: X fills the picture with a formula, V shifts every colour by one
+# =====================================================================
+:WORKING                   # tell the user a big job has started
+  24134 F 20000 L WKRET *
+  MSG C GREY C OBFLUSH C "working on " 24136 F 24137 F OBSZ C  24893  OBS C RESET C OBFLUSH C
+:WKRET
+  R
+:MATHS
+  DSNAP C WORKING C
+  0 24238 T 65552 24239 T
+  24136 F 2 V 24240 T 24137 F 2 V 24241 T
+:MAY
+  24238 F 24137 F / MAEND *
+  0 24242 T
+:MAX1
+  24242 F 24136 F / MANY *
+  MFORM C 24239 F T 24239 PSTO
+  24242 PSTO MAX1 B
+:MANY
+  24238 PSTO MAY B
+:MAEND
+  1 24142 T
+  MSG C  24905  OBS C
+  24243 F MNAME C
+  24243 F + 8 MOD 24243 T
+  ALLDIRTY C R
+:MFORM                     # ( -- colour) for pixel $mx,$my
+  24243 F
+  D MF0 J
+  D 1 E MF1 *
+  D 2 E MF2 *
+  D 3 E MF3 *
+  D 4 E MF4 *
+  D 5 E MF5 *
+  D 6 E MF6 *
+  ! 24242 F 8 M 24136 F V 24238 F 8 M 24137 F V 8 M A R
+:MF0
+  ! 24242 F 24238 F X 24195 F A 63 P R
+:MF1
+  ! 24242 F 24238 F M 24195 F A 63 P R
+:MF2
+  ! 24242 F 24240 F S D M 24238 F 24241 F S D M A 3 > 24195 F A 63 P R
+:MF3
+  ! 24242 F 24238 F P MF3OFF *
+  24195 F R
+:MF3OFF
+  0 R
+:MF4
+  ! 24242 F 24238 F A 24195 F A 63 P R
+:MF5
+  ! 24242 F 24240 F S D M 24238 F 24241 F S D M A 2 > 24242 F 24238 F M 3 > X 63 P R
+:MF6
+  ! 24242 F 2 > 24238 F 2 > A 1 P MF6B *
+  24195 F R
+:MF6B
+  24195 F 63 X R
+:MNAME                     # (formula --)
+  D MN0 J
+  D 1 E MN1 *
+  D 2 E MN2 *
+  D 3 E MN3 *
+  D 4 E MN4 *
+  D 5 E MN5 *
+  D 6 E MN6 *
+  ! OBFLUSH C "the whole codon table, 8 x 8   (X again: next formula)" R
+:MN0
+  ! OBFLUSH C "x xor y   (X again: next formula, ] [ shift the colours)" R
+:MN1
+  !  24913  OBS C R
+:MN2
+  ! OBFLUSH C "rings: distance squared from the centre" R
+:MN3
+  ! OBFLUSH C "Sierpinski: x and y = 0" R
+:MN4
+  ! OBFLUSH C "diagonal rainbow: x + y" R
+:MN5
+  ! OBFLUSH C "interference: distance squared xor x times y" R
+:MN6
+  ! OBFLUSH C "checkerboard with the complementary codon" R
+
+:CYCLE                     # every pixel's codon + 1
+  WORKING C
+  65552 24239 T 65552 24134 F A 24244 T
+:CYLP
+  24239 F 24244 F / CYEND *
+  24239 F F + 63 P 24239 F T 24239 PSTO CYLP B
+:CYEND
+  ALLDIRTY C 1 24142 T R
+
+# =====================================================================
+#  text prompts on the message line: a file name, a size "WxH"
+# =====================================================================
+:MAKEPATH                  # (ext --)  PATH = NB + ext
+  NB2PATH C
+  23288 STRLEN C 23288 A STRCPY C R
+:NB2PATH
+  23240 23288 STRCPY C R
+:STRLEN                    # (a -- n)
+  D
+:SLLP
+  D F SLEND J
+  + SLLP B
+:SLEND
+  SWAP S R
+:STRCPY                    # (src dst --)
+  OVER F OVER T
+  OVER F SCEND J
+  + SWAP + SWAP STRCPY B
+:SCEND
+  ] R
+
+:ASKNAME                   # ( -- ok)  edit the file name on the message line
+  23240 F ANHAVE *
+  24638 23240 STRCPY C
+:ANHAVE
+:ANLP
+  MSG C 24245 F OBS C BOLD C 23240 OBS C RESET C 95 OBC C OBFLUSH C
+  0 4145 T 2 TSYS C ANKEY *
+  4149 F 1 E ANNO *
+  ANLP B
+:ANKEY
+  4149 F 24246 T
+  24246 F 10 E ANYES *
+  24246 F 27 E ANNO *
+  24246 F 8 E ANBS *
+  24246 F 33 L ANLP *
+  24246 F 126 G ANLP *
+  24246 F 47 E ANLP *
+  23240 STRLEN C D 40 / ANFULL *
+  23240 A D 24246 F SWAP T + 0 SWAP T ANLP B
+:ANFULL
+  ! ANLP B
+:ANBS
+  23240 STRLEN C D ANBS0 J
+  - 23240 A 0 SWAP T ANLP B
+:ANBS0
+  ! ANLP B
+:ANYES
+  23240 F ANNO J
+  1 R
+:ANNO
+  0 R
+
+:SBN                       # (n --)  append a decimal number to SB at $sbp
+  D 10 L SBN1 *
+  D 10 V SBN C 10 MOD
+:SBN1
+  48 A 24247 F T 24247 PSTO R
+:ASKSIZE                   # (w h -- ok)  edit "WxH"; prompt $askw, limits $limw $limh,
+                           # hint line $askh; sets $nw $nh, and $askk = 10 Enter or 9 Tab
+  23640 24247 T SWAP SBN C 120 24247 F T 24247 PSTO SBN C 0 24247 F T
+  24167 F 1 TG C ESC C  24722  OBS C GREY C 24248 F OBS C RESET C
+:ASLP
+  MSG C 24245 F OBS C BOLD C 23640 OBS C RESET C 95 OBC C
+  GREY C  24923  OBS C 24249 F 24250 F OBSZ C 41 OBC C RESET C OBFLUSH C
+  0 4145 T 2 TSYS C ASKEY *
+  4149 F 1 E ASNO *
+  ASLP B
+:ASKEY
+  4149 F 24246 T
+  24246 F 10 E ASGO *
+  24246 F 9 E ASGO *
+  24246 F 27 E ASNO *
+  24246 F 8 E ASBS *
+  23640 STRLEN C 15 / ASLP *
+  24246 F 48 L ASSEP *
+  24246 F 57 G ASSEP *
+:ASADD
+  23640 STRLEN C 23640 A D 24246 F SWAP T + 0 SWAP T ASLP B
+:ASSEP                     # x X * , and space all separate the two numbers
+  24246 F 32 O 120 E ASSX *
+  24246 F 42 E ASSX *
+  24246 F 44 E ASSX *
+  24246 F 32 E ASSX *
+  ASLP B
+:ASSX
+  120 24246 T ASADD B
+:ASBS
+  23640 STRLEN C D ASBS0 J
+  - 23640 A 0 SWAP T ASLP B
+:ASBS0
+  ! ASLP B
+:ASNO
+  HINTS C MSG C 0 R
+:ASGO
+  24246 F 24251 T HINTS C
+  23640 24252 T 0 24253 T 0 24254 T 0 24255 T 0 24256 T
+:PS1
+  24252 F F D 48 L PS1E * D 57 G PS1E *
+  48 S 24253 F 10 M A 99999 MIN 24253 T 24252 PSTO 1 24255 T PS1 B
+:PS1E
+  !
+:PSSKIP
+  24252 F F D PSEND J
+  D 48 L PSNX * D 57 G PSNX *
+  !
+:PS2
+  24252 F F D 48 L PSEND * D 57 G PSEND *
+  48 S 24254 F 10 M A 99999 MIN 24254 T 24252 PSTO 1 24256 T PS2 B
+:PSNX
+  ! 24252 PSTO PSSKIP B
+:PSEND
+  !
+  24255 F 24256 F P PSBAD J
+  24253 F 1 L PSBAD * 24254 F 1 L PSBAD *
+  24253 F 24249 F G PSBIG * 24254 F 24250 F G PSBIG *
+  1 R
+:PSBAD
+  MSG C 53 SETFG C OBFLUSH C "type a size like 120x80" RESET C 0 R
+:PSBIG
+  MSG C 53 SETFG C  24934  OBS C 24249 F 24250 F OBSZ C RESET C 0 R
+
+:PBS                       # (str --)  append to the prompt buffer PB at $pbp
+  D F PBSE J
+  D F 24257 F T 24257 PSTO + PBS B
+:PBSE
+  ! 0 24257 F T R
+:PBD                       # (n --)  plain decimal
+  D 10 L PBD1 *
+  D 10 V PBD C 10 MOD
+:PBD1
+  48 A 24257 F T 24257 PSTO 0 24257 F T R
+:PBN                       # (n --)  with thousands commas
+  D 1000 L PBD *
+  D 1000 V PBN C 44 24257 F T 24257 PSTO 1000 MOD
+  D 100 V PBD C D 10 V 10 MOD PBD C 10 MOD PBD B
+
+:NEEDFS                    # ( -- ok)
+  4138 F 18003 E NFOK *
+  MSG C 53 SETFG C OBFLUSH C "saving and loading need --fs:  python3 GATCnux.py run paint.aa --tty --fs" RESET C 0 R
+:NFOK
+  1 R
+
+# =====================================================================
+#  picture size and screen size
+# =====================================================================
+:KNEW                      # N: a new blank picture, any size
+   24956  24245 T  24970  24248 T
+  1024 24249 T 1024 24250 T
+  24136 F 24137 F ASKSIZE C NWRET J
+  1048576 16 A SNAPN C
+  16 1048576 0 HSET C 8 HOST C !
+  24136 F 24258 T 24137 F 24259 T
+  24253 F 24136 T 24254 F 24137 T SETNP C WRITEHDR C
+  0 24135 T 0 24197 T 0 24161 T 0 24143 T 1 24142 T
+  RELAYOUT C
+  MSG C 29 SETFG C  25010  OBS C 24136 F 24137 F OBSZ C RESET C
+  GREY C  25023  OBS C 24258 F 24259 F OBSZ C OBFLUSH C ", U brings it back)" RESET C
+:NWRET
+  R
+
+:KPICSIZE                  # W: picture size.  Enter / Tab: re-wrap or crop/pad
+   25031  24245 T
+  24135 F KPSFA *
+   25046  24248 T KPSASK B
+:KPSFA
+   25125  24248 T
+:KPSASK
+  1024 24249 T 1024 24250 T
+  24136 F 24137 F ASKSIZE C KPSRET J
+  24251 F 10 E 24135 F E REWRAP *
+  CROPPAD B
+:KPSRET
+  R
+:KWIDTH                    # (delta --)  ( and ): width - 1 / + 1, re-wrap
+  24136 F A 1 MAX 1024 MIN 24253 T
+  24137 F 24254 T
+  24135 F KWNOFA J
+  24197 F KWNOFA *
+  24260 F 24253 F A - 24253 F V 1024 MIN 1 MAX 24254 T
+:KWNOFA
+  REWRAP B
+:REWRAP                    # ($nw $nh)  same pixel sequence, new width
+  24136 F 24258 T 24137 F 24259 T
+  24134 F 24253 F 24254 F M MAX 16 A SNAPN C
+  24253 F 24136 T 24254 F 24137 T SETNP C WRITEHDR C
+  24135 F RWNOFA J
+  RELOAD C
+:RWNOFA
+  1 24142 T
+  24135 F 24260 F 24134 F G P 24197 T
+  RELAYOUT C
+  MSG C  25207  OBS C 24258 F 24259 F OBSZ C  25216  OBS C BOLD C 24136 F 24137 F OBSZ C RESET C
+  GREY C OBFLUSH C "  re-wrapped  (U undo, ( ) step the width)" RESET C R
+:CROPPAD                   # ($nw $nh)  pixels keep their x,y; the edges are cut or padded
+  24136 F 24258 T 24137 F 24259 T
+  24134 F 24253 F 24254 F M MAX 16 A SNAPN C
+  16 24134 F 1048592 HSET C 9 HOST C !
+  16 1048576 0 HSET C 8 HOST C !
+  0 24261 T
+:CPLP
+  24261 F 24259 F 24254 F MIN / CPEND *
+  1048592 24261 F 24258 F M A  24258 F 24253 F MIN  16 24261 F 24253 F M A  HSET C 9 HOST C !
+  24261 PSTO CPLP B
+:CPEND
+  24253 F 24136 T 24254 F 24137 T SETNP C WRITEHDR C
+  0 24135 T 0 24197 T 1 24142 T
+  RELAYOUT C
+  MSG C  25207  OBS C 24258 F 24259 F OBSZ C  25216  OBS C BOLD C 24136 F 24137 F OBSZ C RESET C
+  GREY C OBFLUSH C "  cropped / padded  (U undo)" RESET C R
+
+:KSCREEN                   # #: screen size
+  TERMSIZE C
+   25221  24245 T
+   25235  24248 T
+  24152 F 24249 T 24153 F 24250 T
+  24155 F 24157 F ASKSIZE C KSRET J
+  24155 F 24258 T 24157 F 24259 T
+  24253 F 24154 T 24254 F 24156 T
+  24251 F 9 E KSSET J
+  24152 F 24154 T 24153 F 24156 T
+:KSSET
+  RELAYOUT C
+  MSG C  25336  OBS C 24258 F 24259 F OBSZ C  25216  OBS C BOLD C 24155 F 24157 F OBSZ C RESET C
+  GREY C  25344  OBS C 24136 F 24137 F OBSZ C
+  24158 F KSFIT *
+  OBFLUSH C "  at 1:1 (0: fit)" RESET C R
+:KSFIT
+  OBFLUSH C "  stretched to fit (0: 1:1)" RESET C
+:KSRET
+  R
+:KFIT                      # 0: fit <-> 1:1
+  24158 F N 24158 T RELAYOUT C
+  MSG C 24158 F KFFIT *
+  OBFLUSH C "1:1 - one picture pixel per screen pixel, arrows scroll (0: fit)" R
+:KFFIT
+  OBFLUSH C "fit - the whole picture stretched over the screen (0: 1:1)" R
+:CHECKTERM                 # the terminal was resized: lay the screen out again
+  TERMSIZE C
+  24150 F 24262 F = 24151 F 24263 F = O CTRET J
+  24150 F 24262 T 24151 F 24263 T RELAYOUT C
+:CTRET
+  R
+
+# =====================================================================
+#  files: FASTA (one codon per pixel) and BMP (24 bit, scaled up)
+# =====================================================================
+:SAVE
+  NEEDFS C SVRET J
+   25356  24245 T
+  ASKNAME C SVRET J
+   25366  MAKEPATH C
+  23288 4129 T 1 4130 T 9 FSYS C SVFAIL J
+  WORKING C
+  OBFLUSH C 4134 F 24129 T
+   25370  OBS C 24136 F 24137 F OBSZ C 32 OBC C 23240 OBS C 10 OBC C
+  65552 24264 T 65552 24134 F A 24265 T
+:SFLINE                    # 20 codons (60 bases) per line, letters from the CB table
+  24264 F 24265 F / SFEND *
+  OBROOM C
+  24264 F 20 A 24265 F MIN 24266 T
+:SFLP
+  24264 F 24266 F / SFNLN *
+  24264 F F 3 M 23744 A
+  D F 24128 F T 24128 PSTO + D F 24128 F T 24128 PSTO + F 24128 F T 24128 PSTO
+  24264 PSTO SFLP B
+:SFNLN
+  10 24128 F T 24128 PSTO SFLINE B
+:SFEND
+  OBFLUSH C 24129 F 4129 T 12 FSYS C ! 0 24129 T
+   25382  MAKEPATH C
+  23288 4129 T 1 4130 T 9 FSYS C SVFAIL J
+  4134 F 24129 T
+  512 24136 F 24137 F MAX V 8 MIN 1 MAX 24267 T
+  24136 F 24267 F M 24268 T 24137 F 24267 F M 24269 T
+  24268 F 3 M 3 A 4 V 4 M 24270 T
+  OBROOM C
+  66 OBC C 77 OBC C 24270 F 24269 F M 54 A LE32 C 0 LE32 C 54 LE32 C
+  40 LE32 C 24268 F LE32 C 24269 F LE32 C 1 LE16 C 24 LE16 C 0 LE32 C
+  24270 F 24269 F M LE32 C 2835 LE32 C 2835 LE32 C 0 LE32 C 0 LE32 C
+  OBFLUSH C
+  0 24132 T
+:BMZ                       # padding bytes stay 0
+  24132 F 24270 F / BMZE *
+  0 24132 F 20160 A T 24132 PSTO BMZ B
+:BMZE
+  24137 F - 24223 T
+:BMROW                     # rows bottom-up; build one scanline, write it bk8 times
+  24223 F 0 L BMEND *
+  24223 F 24136 F M 65552 A 24271 T 0 24225 T 20160 24272 T
+  24267 F 1 E BM1 *
+:BMPX
+  24225 F 24136 F / BMWR *
+  24271 F 24225 F A F 3 M 23936 A 24273 T
+  24267 F 24274 T
+:BMREP                     # blue, green, red bytes from the BGRT table, bk8 times
+  24274 F BMNPX J
+  24273 F D F 24272 F T + D F 24272 F + T + F 24272 F 2 A T
+  24272 F 3 A 24272 T 24274 F - 24274 T BMREP B
+:BMNPX
+  24225 PSTO BMPX B
+:BM1                       # scale 1 (big pictures): pixel pointer kept on the stack
+  24271 F D 24136 F A 24275 T
+:BM1LP
+  D 24275 F / BM1E *
+  D F 3 M 23936 A
+  D F 24272 F T 24272 PSTO + D F 24272 F T 24272 PSTO + F 24272 F T 24272 PSTO
+  + BM1LP B
+:BM1E
+  ! BMWR B
+:BMWR
+  24267 F 24274 T
+:BMW8
+  24274 F BMNROW J
+  24129 F 4129 T 20160 4130 T 24270 F 4131 T 11 FSYS C !
+  24274 F - 24274 T BMW8 B
+:BMNROW
+  24223 F - 24223 T BMROW B
+:BMEND
+  24129 F 4129 T 12 FSYS C ! 0 24129 T
+  0 24142 T
+  MSG C 29 SETFG C  25387  OBS C 23240 OBS C  25394  OBS C 23240 OBS C  25382  OBS C RESET C
+  GREY C  25407  OBS C 24136 F 24137 F OBSZ C  25411  OBS C 24268 F 24269 F OBSZ C RESET C
+:SVRET
+  R
+:SVFAIL
+  0 24129 T
+  MSG C 53 SETFG C  25425  OBS C 23288 OBS C RESET C R
+:LE32                      # (n --)
+  D 255 P OBC C D 8 > 255 P OBC C D 16 > 255 P OBC C 24 > 255 P OBC C R
+:LE16
+  D 255 P OBC C 8 > 255 P OBC C R
+
+# ---------------------------------------------------------------------
+#  opening a FASTA file: the whole sequence is read once, as codons in all
+#  three reading frames (frame f holds the codons that start at bases f,
+#  f+3, f+6 ...), so a new width or reading frame is one host copy.
+# ---------------------------------------------------------------------
+:OPENFA
+  NEEDFS C LDRET J
+   25442  24245 T
+  ASKNAME C LDRET J
+   25366  MAKEPATH C
+  23288 4129 T 1 4130 T 1 FSYS C LDFAIL J
+  4134 F 24276 T
+  23288 4129 T 0 4130 T 9 FSYS C LDFAIL J
+  4134 F 24277 T
+  23240 23416 STRCPY C
+  LOADSEQ C
+  24277 F 4129 T 12 FSYS C ! 0 24277 T
+  24260 F LDEMPTY J
+  PARSEHDR C LDHAVE *
+  24136 F 1 MAX 24253 T
+  24260 F 24253 F A - 24253 F V 1024 MIN 1 MAX 24254 T
+:LDHAVE
+  23664 24257 T 24260 F PBN C  25449  PBS C 23664 24245 T
+   25474  24248 T
+  1024 24249 T 1024 24250 T
+  24253 F 24254 F ASKSIZE C LDCANCEL J
+  24136 F 24258 T 24137 F 24259 T
+  24253 F 24136 T 24254 F 24137 T SETNP C WRITEHDR C
+  0 24278 T 1 24135 T RELOAD C
+  24260 F 24134 F G 24197 T
+  0 24142 T 0 24161 T 0 24143 T
+  RELAYOUT C
+  MSG C 29 SETFG C  25553  OBS C 23288 OBS C RESET C  25561  OBS C BOLD C 24136 F 24137 F OBSZ C RESET C
+  24197 F LDVIEW *
+  GREY C OBFLUSH C "   ( ) width, W size, # screen" RESET C R
+:LDVIEW
+  GREY C OBFLUSH C "   longer than the picture: arrows scroll, K keeps" RESET C R
+:LDCANCEL                  # keep the old picture (its header is untouched)
+  READHDR C ! 0 24135 T 0 24197 T RELAYOUT C R
+:LDEMPTY
+  MSG C 53 SETFG C 23288 OBS C OBFLUSH C ": no DNA bases found" RESET C
+  READHDR C ! 0 24135 T R
+:LDRET
+  R
+:LDFAIL
+  MSG C 53 SETFG C  25566  OBS C 23288 OBS C RESET C R
+
+:RDBLK                     # ( -- ok)  next block of the file into FSTACK, 0-terminated
+  24277 F 4129 T 4160 4130 T 4096 4131 T 10 FSYS C RDBNO J
+  4134 F D RDBNO0 J
+  4160 A 0 SWAP T 4160 24279 T 1 R
+:RDBNO0
+  !
+:RDBNO
+  0 R
+
+:LOADSEQ                   # read the open file $vfd: $seqb bases, $seqn codons (frame 0)
+  14 HOST C !
+  24276 F 3000000 4096 A MIN 3 V 2 A 24280 T
+  2097168 24280 F 3 M A 0 0 HSET C 11 HOST C !
+  65536 2097168 A D 24281 T D 24282 T 24280 F A D 24283 T D 24284 T 24280 F A D 24285 T 24286 T
+  0 24287 T 0 24288 T 0 23592 T 0 24289 T 0 24290 T
+  LSW0 24291 T
+  MSG C GREY C OBFLUSH C "reading ..." RESET C OBFLUSH C
+  RDBLK C LSDONE J
+  24279 F F 62 E LSHEAD *
+:LSBYTE
+  24279 F F 24279 PSTO 127 P 23464 A F
+  D 4 L LSBASE *
+  D 7 E LSNUL *
+  5 = LSBYTE *
+:LSSKIP                    # a header line: skip to its end
+  24279 F F 24279 PSTO
+  D LSSNUL J
+  10 = LSSKIP *
+  LSBYTE B
+:LSSNUL
+  ! RDBLK C LSDONE J LSSKIP B
+:LSHEAD                    # the first header line: keep up to 47 characters of it
+  24279 PSTO
+:LSHLP
+  24279 F F
+  D LSHNUL J
+  D 10 E LSHEND *
+  D 13 E LSHEND *
+  24289 F 47 / LSHFULL *
+  24289 F 23592 A T 24289 PSTO 0 24289 F 23592 A T 24279 PSTO LSHLP B
+:LSHFULL
+  ! 24279 PSTO LSHLP B
+:LSHNUL
+  ! RDBLK C LSDONE J LSHLP B
+:LSHEND
+  ! LSBYTE B
+:LSNUL                     # end of a block
+  ! 24287 F 3000000 / LSDONE *
+  24290 PSTO 24290 F 63 P LSNOMSG *
+  MSG C GREY C  25582  OBS C 24287 F OBNC C  25595  OBS C RESET C OBFLUSH C
+:LSNOMSG
+  RDBLK C LSDONE J LSBYTE B
+:LSBASE                    # (base --)  rolling codon of the last three bases
+  24288 F 2 < A 63 P 24288 T 24287 PSTO 24291 F B
+:LSW0
+  LSW1 24291 T LSBYTE B
+:LSW1
+  LSS0 24291 T LSBYTE B
+:LSS0
+  24288 F 24281 F T 24281 PSTO LSS1 24291 T LSBYTE B
+:LSS1
+  24288 F 24283 F T 24283 PSTO LSS2 24291 T LSBYTE B
+:LSS2
+  24288 F 24285 F T 24285 PSTO LSS0 24291 T LSBYTE B
+:LSDONE
+  24281 F 24282 F S 24260 T
+  24283 F 24284 F S 24292 T 24285 F 24286 F S 24293 T R
+
+:PARSEHDR                  # ( -- found)  ">GATCpaint WxH ..." -> $nw $nh
+  23592 24252 T
+   25602  24294 T
+:PHLP
+  24294 F F PHNUM J
+  24252 F F 24294 F F = PHNO *
+  24252 PSTO 24294 PSTO PHLP B
+:PHNUM
+  0 24253 T 0 24254 T
+:PHW
+  24252 F F D 48 L PHWE * D 57 G PHWE *
+  48 S 24253 F 10 M A 24253 T 24252 PSTO PHW B
+:PHWE
+  120 = PHNO * 24252 PSTO
+:PHH
+  24252 F F D 48 L PHHE * D 57 G PHHE *
+  48 S 24254 F 10 M A 24254 T 24252 PSTO PHH B
+:PHHE
+  !
+  24253 F 1 L PHNO * 24254 F 1 L PHNO *
+  24253 F 1024 G PHNO * 24254 F 1024 G PHNO *
+  1 R
+:PHNO
+  0 R
+
+:RELOAD                    # picture = the codons from base $vb on (reading frame $vb mod 3)
+  16 24134 F 0 HSET C 8 HOST C !
+  24278 F 3 MOD 24295 T 24278 F 3 V 24296 T
+  24295 F FRCNT C 24296 F S 24134 F MIN 24297 T
+  24297 F 1 L RLEND *
+  2097168 24295 F 24280 F M A 24296 F A  24297 F  16  HSET C 9 HOST C !
+:RLEND
+  ALLDIRTY C R
+:FRCNT                     # (frame -- codons in it)
+  D FRC0 J
+  1 E FRC1 *
+  24293 F R
+:FRC0
+  ! 24260 F R
+:FRC1
+  24292 F R
+
+:VCLOSE                    # leave the viewer
+  0 24197 T R
+
+# ---------------------------------------------------------------------
+#  viewer: a sequence longer than the picture.  Arrows scroll the DNA.
+# ---------------------------------------------------------------------
+:VDELTA                    # (key -- delta 1 | 0 0)  scroll keys in the viewer
+  D 1001 E VDU *
+  D 1002 E VDD *
+  D 1003 E VDR *
+  D 1004 E VDL *
+  D 1007 E VDPU *
+  D 1008 E VDPD *
+  D 2002 E VDWU *
+  D 2003 E VDWD *
+  D 60 E VDFL *
+  D 44 E VDFL *
+  D 62 E VDFR *
+  D 46 E VDFR *
+  ! 0 0 R
+:VDU
+  ! 0 24136 F 3 M S 1 R
+:VDD
+  ! 24136 F 3 M 1 R
+:VDR
+  ! 3 1 R
+:VDL
+  ! 0 3 S 1 R
+:VDPU
+  ! 0 24134 F 3 M S 1 R
+:VDPD
+  ! 24134 F 3 M 1 R
+:VDWU
+  ! 0 24136 F 9 M S 1 R
+:VDWD
+  ! 24136 F 9 M 1 R
+:VDFL
+  ! 0 1 S 1 R
+:VDFR
+  ! 1 1 R
+
+:VKEYS
+  24298 F VDELTA C VKMOVE *
+  !
+  24298 F 1005 E VHOME *
+  24298 F 1006 E VEND *
+  24298 F 2000 E VCLICK *
+  24298 F 75 E VKEEP *
+  24298 F 27 E VKEEP *
+  24298 F 69 E KLOAD *
+  24298 F 83 E KSAVE *
+  24298 F 72 E KHELP *
+  24298 F 63 E KHELP *
+  24298 F 68 E KCARD *
+  24298 F 81 E KQUIT *
+  24298 F 87 E KPICSIZE *
+  24298 F 35 E KSCREEN *
+  24298 F 40 E KWDN *
+  24298 F 41 E KWUP *
+  24298 F 48 E KFIT *
+  24298 F 85 E KUNDO *
+  24298 F 89 E KREDO *
+  24298 F 2001 E VKRET *
+  MSG C OBFLUSH C "viewing a long file: K keeps this picture so you can draw on it" R
+:VKRET
+  R
+:VKMOVE                    # (delta)  plus every scroll key already waiting
+  24299 T
+:VDRAIN
+  1 4145 T 2 TSYS C VAPPLY J
+  4149 F VDELTA C VDMORE *
+  ! 1 24300 T 4149 F 24301 T 4150 F 24302 T 4151 F 24303 T 4152 F 24304 T VAPPLY B
+:VDMORE
+  24299 F A 24299 T VDRAIN B
+:VAPPLY                    # clamp to the sequence, keeping the reading frame
+  24260 F 3 M 24134 F 3 M S 0 MAX 24305 T
+  24278 F 24299 F A 24306 T
+:VCLAMP
+  24306 F 0 L VCLO *
+  24306 F 24305 F G VCHI *
+  24306 F 24278 T VSHOW B
+:VCLO
+  24306 F 3 MOD 24278 T VSHOW B
+:VCHI
+  24305 F 24305 F 24306 F S 3 MOD S 24278 T
+:VSHOW
+  14 HOST C ! RELOAD C R
+:VHOME
+  24278 F 3 MOD 24278 T VSHOW B
+:VEND                      # last screen, same reading frame
+  24260 F 3 M 24134 F 3 M S 0 MAX 24305 T
+  24305 F 24278 F S 3 V + 3 M 24278 F A 24306 T VCLAMP B
+:VCLICK
+  CLICKPX C VKRET J
+  24307 F 24308 F MOVETO C
+  24168 F 24169 F GETPX C 24195 T
+  MSG C  25613  OBS C 24169 F 24136 F M 24168 F A 3 M 24278 F A + OBNC C
+   25619  OBS C 24195 F AAINFO C R
+:VKEEP
+  VCLOSE C 0 24135 T 1 24142 T FULLDRAW C
+  MSG C OBFLUSH C "this picture is yours now - draw away (E opens the file again)" R
+
+:VPANEL                    # viewer info and a scrollbar on the screen's right edge
+  16 PLINE C  25622  OBS C RESET C 23416 OBS C
+  17 PLINE C  25630  OBS C
+  18 PLINE C 2 OBSP C RESET C 24278 F + OBNC C
+  19 PLINE C  25640  OBS C RESET C 24287 F OBNC C
+  20 PLINE C  25644  OBS C RESET C 24278 F 3 MOD + OBN C 3 OBSP C
+  24260 F 3 M 24134 F 3 M S 0 MAX 24305 T
+  24278 F 100 M 24305 F 1 MAX V 100 MIN OBN C 37 OBC C
+  21 PLINE C  25652  OBS C RESET C
+  0 24132 T
+:VSBLP
+  24132 F 24149 F / VSBEND *
+  24132 F 2 A 24164 F 2 A GOTO C
+  24278 F 24149 F - M 24305 F 1 MAX V 24132 F E VSBTH *
+  GREY C 24667 OBS C RESET C 24132 PSTO VSBLP B
+:VSBTH
+  56 SETFG C 24675 OBS C RESET C 24132 PSTO VSBLP B
+:VSBEND
+  R
+
+:TBLINIT                   # codon -> its 3 letters (CB) and its BMP blue, green, red (BGRT)
+  0 24132 T
+:TBLP
+  24132 F 64 / TBEND *
+  24132 F 4 > 24611 A F 24132 F 3 M 23744 A T
+  24132 F 2 > 3 P 24611 A F 24132 F 3 M 23744 A + T
+  24132 F 3 P 24611 A F 24132 F 3 M 23744 A 2 A T
+  24132 F 3 P 85 M 24132 F 3 M 23936 A T
+  24132 F 2 > 3 P 85 M 24132 F 3 M 23936 A + T
+  24132 F 4 > 85 M 24132 F 3 M 23936 A 2 A T
+  24132 PSTO TBLP B
+:TBEND
+  R
+:BTINIT                    # byte -> class: a/A 0  c/C 1  g/G 2  t/T u/U 3,
+  0 24132 T                   # other letters (N ...) and - . count as 0, > is 5, the rest 9
+:BTLP
+  24132 F 128 / BTEND *
+  9 24132 F 23464 A T
+  24132 F 32 O 97 L BTN *
+  24132 F 32 O 122 G BTN *
+  0 24132 F 23464 A T
+:BTN
+  24132 PSTO BTLP B
+:BTEND
+  0 45 23464 A T 0 46 23464 A T 5 62 23464 A T 7 23464 T
+  1 99 23464 A T 2 103 23464 A T 3 116 23464 A T 3 117 23464 A T
+  1 67 23464 A T 2 71 23464 A T 3 84 23464 A T 3 85 23464 A T R
+
+:OBNC                      # (n --)  decimal with thousands commas
+  D 1000 L OBNCS *
+  D 1000 V OBNC C
+  44 OBC C 1000 MOD
+  D 100 V 48 A OBC C D 10 V 10 MOD 48 A OBC C 10 MOD 48 A OBC C R
+:OBNCS
+  OBN B
+
+# =====================================================================
+#  the genetic code: what each codon means in a living cell
+# =====================================================================
+# ---- generated by gen_codons.py: the standard genetic code (NCBI table 1) ----
+
+:AATAB                     # (codon*2 + AATAB) -> amino acid index, A C D E ... Y, 20 = stop
+  8 R                      # AAA K
+  11 R                      # AAC N
+  8 R                      # AAG K
+  11 R                      # AAT N
+  16 R                      # ACA T
+  16 R                      # ACC T
+  16 R                      # ACG T
+  16 R                      # ACT T
+  14 R                      # AGA R
+  15 R                      # AGC S
+  14 R                      # AGG R
+  15 R                      # AGT S
+  7 R                      # ATA I
+  7 R                      # ATC I
+  10 R                      # ATG M
+  7 R                      # ATT I
+  13 R                      # CAA Q
+  6 R                      # CAC H
+  13 R                      # CAG Q
+  6 R                      # CAT H
+  12 R                      # CCA P
+  12 R                      # CCC P
+  12 R                      # CCG P
+  12 R                      # CCT P
+  14 R                      # CGA R
+  14 R                      # CGC R
+  14 R                      # CGG R
+  14 R                      # CGT R
+  9 R                      # CTA L
+  9 R                      # CTC L
+  9 R                      # CTG L
+  9 R                      # CTT L
+  3 R                      # GAA E
+  2 R                      # GAC D
+  3 R                      # GAG E
+  2 R                      # GAT D
+  0 R                      # GCA A
+  0 R                      # GCC A
+  0 R                      # GCG A
+  0 R                      # GCT A
+  5 R                      # GGA G
+  5 R                      # GGC G
+  5 R                      # GGG G
+  5 R                      # GGT G
+  17 R                      # GTA V
+  17 R                      # GTC V
+  17 R                      # GTG V
+  17 R                      # GTT V
+  20 R                      # TAA *
+  19 R                      # TAC Y
+  20 R                      # TAG *
+  19 R                      # TAT Y
+  15 R                      # TCA S
+  15 R                      # TCC S
+  15 R                      # TCG S
+  15 R                      # TCT S
+  20 R                      # TGA *
+  1 R                      # TGC C
+  18 R                      # TGG W
+  1 R                      # TGT C
+  9 R                      # TTA L
+  4 R                      # TTC F
+  9 R                      # TTG L
+  4 R                      # TTT F
+
+:AANAME                   # (aa --) full name
+  2 M AANAMET A B
+:AANAMET
+  AANAME0 B
+  AANAME1 B
+  AANAME2 B
+  AANAME3 B
+  AANAME4 B
+  AANAME5 B
+  AANAME6 B
+  AANAME7 B
+  AANAME8 B
+  AANAME9 B
+  AANAME10 B
+  AANAME11 B
+  AANAME12 B
+  AANAME13 B
+  AANAME14 B
+  AANAME15 B
+  AANAME16 B
+  AANAME17 B
+  AANAME18 B
+  AANAME19 B
+  AANAME20 B
+:AANAME0
+  OBFLUSH C "Alanine" R
+:AANAME1
+  OBFLUSH C "Cysteine" R
+:AANAME2
+  OBFLUSH C "Aspartic acid" R
+:AANAME3
+  OBFLUSH C "Glutamic acid" R
+:AANAME4
+  OBFLUSH C "Phenylalanine" R
+:AANAME5
+  OBFLUSH C "Glycine" R
+:AANAME6
+  OBFLUSH C "Histidine" R
+:AANAME7
+  OBFLUSH C "Isoleucine" R
+:AANAME8
+  OBFLUSH C "Lysine" R
+:AANAME9
+  OBFLUSH C "Leucine" R
+:AANAME10
+  OBFLUSH C "Methionine" R
+:AANAME11
+  OBFLUSH C "Asparagine" R
+:AANAME12
+  OBFLUSH C "Proline" R
+:AANAME13
+  OBFLUSH C "Glutamine" R
+:AANAME14
+  OBFLUSH C "Arginine" R
+:AANAME15
+  OBFLUSH C "Serine" R
+:AANAME16
+  OBFLUSH C "Threonine" R
+:AANAME17
+  OBFLUSH C "Valine" R
+:AANAME18
+  OBFLUSH C "Tryptophan" R
+:AANAME19
+  OBFLUSH C "Tyrosine" R
+:AANAME20
+  OBFLUSH C "stop codon" R
+
+:AA3                   # (aa --) three-letter code
+  2 M AA3T A B
+:AA3T
+  AA30 B
+  AA31 B
+  AA32 B
+  AA33 B
+  AA34 B
+  AA35 B
+  AA36 B
+  AA37 B
+  AA38 B
+  AA39 B
+  AA310 B
+  AA311 B
+  AA312 B
+  AA313 B
+  AA314 B
+  AA315 B
+  AA316 B
+  AA317 B
+  AA318 B
+  AA319 B
+  AA320 B
+:AA30
+  OBFLUSH C "Ala" R
+:AA31
+  OBFLUSH C "Cys" R
+:AA32
+  OBFLUSH C "Asp" R
+:AA33
+  OBFLUSH C "Glu" R
+:AA34
+  OBFLUSH C "Phe" R
+:AA35
+  OBFLUSH C "Gly" R
+:AA36
+  OBFLUSH C "His" R
+:AA37
+  OBFLUSH C "Ile" R
+:AA38
+  OBFLUSH C "Lys" R
+:AA39
+  OBFLUSH C "Leu" R
+:AA310
+  OBFLUSH C "Met" R
+:AA311
+  OBFLUSH C "Asn" R
+:AA312
+  OBFLUSH C "Pro" R
+:AA313
+  OBFLUSH C "Gln" R
+:AA314
+  OBFLUSH C "Arg" R
+:AA315
+  OBFLUSH C "Ser" R
+:AA316
+  OBFLUSH C "Thr" R
+:AA317
+  OBFLUSH C "Val" R
+:AA318
+  OBFLUSH C "Trp" R
+:AA319
+  OBFLUSH C "Tyr" R
+:AA320
+  OBFLUSH C "Stop" R
+
+:AACLS                   # (aa --) short class
+  2 M AACLST A B
+:AACLST
+  AACLS0 B
+  AACLS1 B
+  AACLS2 B
+  AACLS3 B
+  AACLS4 B
+  AACLS5 B
+  AACLS6 B
+  AACLS7 B
+  AACLS8 B
+  AACLS9 B
+  AACLS10 B
+  AACLS11 B
+  AACLS12 B
+  AACLS13 B
+  AACLS14 B
+  AACLS15 B
+  AACLS16 B
+  AACLS17 B
+  AACLS18 B
+  AACLS19 B
+  AACLS20 B
+:AACLS0
+  OBFLUSH C "nonpolar" R
+:AACLS1
+  OBFLUSH C "polar" R
+:AACLS2
+  OBFLUSH C "acidic" R
+:AACLS3
+  OBFLUSH C "acidic" R
+:AACLS4
+  OBFLUSH C "aromatic" R
+:AACLS5
+  OBFLUSH C "nonpolar" R
+:AACLS6
+  OBFLUSH C "basic" R
+:AACLS7
+  OBFLUSH C "nonpolar" R
+:AACLS8
+  OBFLUSH C "basic" R
+:AACLS9
+  OBFLUSH C "nonpolar" R
+:AACLS10
+  OBFLUSH C "nonpolar" R
+:AACLS11
+  OBFLUSH C "polar" R
+:AACLS12
+  OBFLUSH C "nonpolar" R
+:AACLS13
+  OBFLUSH C "polar" R
+:AACLS14
+  OBFLUSH C "basic" R
+:AACLS15
+  OBFLUSH C "polar" R
+:AACLS16
+  OBFLUSH C "polar" R
+:AACLS17
+  OBFLUSH C "nonpolar" R
+:AACLS18
+  OBFLUSH C "aromatic" R
+:AACLS19
+  OBFLUSH C "aromatic" R
+:AACLS20
+  OBFLUSH C "stop" R
+
+:AASIDE                   # (aa --) side chain
+  2 M AASIDET A B
+:AASIDET
+  AASIDE0 B
+  AASIDE1 B
+  AASIDE2 B
+  AASIDE3 B
+  AASIDE4 B
+  AASIDE5 B
+  AASIDE6 B
+  AASIDE7 B
+  AASIDE8 B
+  AASIDE9 B
+  AASIDE10 B
+  AASIDE11 B
+  AASIDE12 B
+  AASIDE13 B
+  AASIDE14 B
+  AASIDE15 B
+  AASIDE16 B
+  AASIDE17 B
+  AASIDE18 B
+  AASIDE19 B
+  AASIDE20 B
+:AASIDE0
+  OBFLUSH C "nonpolar, aliphatic: methyl group" R
+:AASIDE1
+  OBFLUSH C "polar, sulfur: thiol (-SH)" R
+:AASIDE2
+  OBFLUSH C "acidic, negative: carboxyl" R
+:AASIDE3
+  OBFLUSH C "acidic, negative: carboxyl" R
+:AASIDE4
+  OBFLUSH C "nonpolar, aromatic: benzyl ring" R
+:AASIDE5
+  OBFLUSH C "just one hydrogen atom" R
+:AASIDE6
+  OBFLUSH C "basic: imidazole ring (+ or 0)" R
+:AASIDE7
+  OBFLUSH C "nonpolar, branched chain" R
+:AASIDE8
+  OBFLUSH C "basic, positive: amino group" R
+:AASIDE9
+  OBFLUSH C "nonpolar, branched chain" R
+:AASIDE10
+  OBFLUSH C "nonpolar, sulfur: thioether" R
+:AASIDE11
+  OBFLUSH C "polar, uncharged: amide" R
+:AASIDE12
+  OBFLUSH C "nonpolar ring bonded to backbone" R
+:AASIDE13
+  OBFLUSH C "polar, uncharged: amide" R
+:AASIDE14
+  OBFLUSH C "basic, positive: guanidinium" R
+:AASIDE15
+  OBFLUSH C "polar, uncharged: hydroxyl" R
+:AASIDE16
+  OBFLUSH C "polar, uncharged: hydroxyl" R
+:AASIDE17
+  OBFLUSH C "nonpolar, branched chain" R
+:AASIDE18
+  OBFLUSH C "nonpolar, aromatic: indole ring" R
+:AASIDE19
+  OBFLUSH C "polar, aromatic: phenol group" R
+:AASIDE20
+  OBFLUSH C "none: translation ends here" R
+
+:AAMASS                   # (aa --) mass
+  2 M AAMASST A B
+:AAMASST
+  AAMASS0 B
+  AAMASS1 B
+  AAMASS2 B
+  AAMASS3 B
+  AAMASS4 B
+  AAMASS5 B
+  AAMASS6 B
+  AAMASS7 B
+  AAMASS8 B
+  AAMASS9 B
+  AAMASS10 B
+  AAMASS11 B
+  AAMASS12 B
+  AAMASS13 B
+  AAMASS14 B
+  AAMASS15 B
+  AAMASS16 B
+  AAMASS17 B
+  AAMASS18 B
+  AAMASS19 B
+  AAMASS20 B
+:AAMASS0
+  OBFLUSH C "89.09 g/mol (free amino acid)" R
+:AAMASS1
+  OBFLUSH C "121.16 g/mol (free amino acid)" R
+:AAMASS2
+  OBFLUSH C "133.10 g/mol (free amino acid)" R
+:AAMASS3
+  OBFLUSH C "147.13 g/mol (free amino acid)" R
+:AAMASS4
+  OBFLUSH C "165.19 g/mol (free amino acid)" R
+:AAMASS5
+  OBFLUSH C "75.07 g/mol (free amino acid)" R
+:AAMASS6
+  OBFLUSH C "155.16 g/mol (free amino acid)" R
+:AAMASS7
+  OBFLUSH C "131.17 g/mol (free amino acid)" R
+:AAMASS8
+  OBFLUSH C "146.19 g/mol (free amino acid)" R
+:AAMASS9
+  OBFLUSH C "131.17 g/mol (free amino acid)" R
+:AAMASS10
+  OBFLUSH C "149.21 g/mol (free amino acid)" R
+:AAMASS11
+  OBFLUSH C "132.12 g/mol (free amino acid)" R
+:AAMASS12
+  OBFLUSH C "115.13 g/mol (free amino acid)" R
+:AAMASS13
+  OBFLUSH C "146.15 g/mol (free amino acid)" R
+:AAMASS14
+  OBFLUSH C "174.20 g/mol (free amino acid)" R
+:AAMASS15
+  OBFLUSH C "105.09 g/mol (free amino acid)" R
+:AAMASS16
+  OBFLUSH C "119.12 g/mol (free amino acid)" R
+:AAMASS17
+  OBFLUSH C "117.15 g/mol (free amino acid)" R
+:AAMASS18
+  OBFLUSH C "204.23 g/mol (free amino acid)" R
+:AAMASS19
+  OBFLUSH C "181.19 g/mol (free amino acid)" R
+:AAMASS20
+  OBFLUSH C "-" R
+
+:AAESS                   # (aa --) essential?
+  2 M AAESST A B
+:AAESST
+  AAESS0 B
+  AAESS1 B
+  AAESS2 B
+  AAESS3 B
+  AAESS4 B
+  AAESS5 B
+  AAESS6 B
+  AAESS7 B
+  AAESS8 B
+  AAESS9 B
+  AAESS10 B
+  AAESS11 B
+  AAESS12 B
+  AAESS13 B
+  AAESS14 B
+  AAESS15 B
+  AAESS16 B
+  AAESS17 B
+  AAESS18 B
+  AAESS19 B
+  AAESS20 B
+:AAESS0
+  OBFLUSH C "no - the body can make it" R
+:AAESS1
+  OBFLUSH C "no - the body can make it" R
+:AAESS2
+  OBFLUSH C "no - the body can make it" R
+:AAESS3
+  OBFLUSH C "no - the body can make it" R
+:AAESS4
+  OBFLUSH C "yes - it must come from food" R
+:AAESS5
+  OBFLUSH C "no - the body can make it" R
+:AAESS6
+  OBFLUSH C "yes - it must come from food" R
+:AAESS7
+  OBFLUSH C "yes - it must come from food" R
+:AAESS8
+  OBFLUSH C "yes - it must come from food" R
+:AAESS9
+  OBFLUSH C "yes - it must come from food" R
+:AAESS10
+  OBFLUSH C "yes - it must come from food" R
+:AAESS11
+  OBFLUSH C "no - the body can make it" R
+:AAESS12
+  OBFLUSH C "no - the body can make it" R
+:AAESS13
+  OBFLUSH C "no - the body can make it" R
+:AAESS14
+  OBFLUSH C "no - the body can make it" R
+:AAESS15
+  OBFLUSH C "no - the body can make it" R
+:AAESS16
+  OBFLUSH C "yes - it must come from food" R
+:AAESS17
+  OBFLUSH C "yes - it must come from food" R
+:AAESS18
+  OBFLUSH C "yes - it must come from food" R
+:AAESS19
+  OBFLUSH C "no - the body can make it" R
+:AAESS20
+  OBFLUSH C "-" R
+# ---- generated by gen_codons.py: notes for paint's codon card ----
+
+:AANOTE                    # (aa --) a short note, up to three lines
+  2 M AANOTET A B
+:AANOTET
+  AANOTE0 B
+  AANOTE1 B
+  AANOTE2 B
+  AANOTE3 B
+  AANOTE4 B
+  AANOTE5 B
+  AANOTE6 B
+  AANOTE7 B
+  AANOTE8 B
+  AANOTE9 B
+  AANOTE10 B
+  AANOTE11 B
+  AANOTE12 B
+  AANOTE13 B
+  AANOTE14 B
+  AANOTE15 B
+  AANOTE16 B
+  AANOTE17 B
+  AANOTE18 B
+  AANOTE19 B
+  AANOTE20 B
+:AANOTE0
+  17 2 GOTO C OBFLUSH C "Small and very common; one of the strongest"
+  18 2 GOTO C OBFLUSH C "helix-forming residues in proteins."
+  R
+:AANOTE1
+  17 2 GOTO C OBFLUSH C "Two cysteines can join through their thiol"
+  18 2 GOTO C OBFLUSH C "groups into a disulfide bond that holds a"
+  19 2 GOTO C OBFLUSH C "protein in shape."
+  R
+:AANOTE2
+  17 2 GOTO C OBFLUSH C "Negatively charged at body pH; often binds"
+  18 2 GOTO C OBFLUSH C "metal ions and works in enzyme active sites."
+  R
+:AANOTE3
+  17 2 GOTO C OBFLUSH C "The brain's main excitatory neurotransmitter,"
+  18 2 GOTO C OBFLUSH C "and the source of umami taste (MSG is its"
+  19 2 GOTO C OBFLUSH C "sodium salt)."
+  R
+:AANOTE4
+  17 2 GOTO C OBFLUSH C "The body turns it into tyrosine; people with"
+  18 2 GOTO C OBFLUSH C "phenylketonuria (PKU) cannot break it down."
+  R
+:AANOTE5
+  17 2 GOTO C OBFLUSH C "The smallest amino acid and the only one with"
+  18 2 GOTO C OBFLUSH C "no chiral centre; it lets chains bend and"
+  19 2 GOTO C OBFLUSH C "makes up about a third of collagen."
+  R
+:AANOTE6
+  17 2 GOTO C OBFLUSH C "Its side chain gains or loses a proton near"
+  18 2 GOTO C OBFLUSH C "body pH, so it often does the chemistry in"
+  19 2 GOTO C OBFLUSH C "enzyme active sites."
+  R
+:AANOTE7
+  17 2 GOTO C OBFLUSH C "A branched-chain amino acid (BCAA) with two"
+  18 2 GOTO C OBFLUSH C "chiral centres; mostly buried inside folded"
+  19 2 GOTO C OBFLUSH C "proteins."
+  R
+:AANOTE8
+  17 2 GOTO C OBFLUSH C "Positively charged; lysines on histones are"
+  18 2 GOTO C OBFLUSH C "acetylated and methylated to switch genes on"
+  19 2 GOTO C OBFLUSH C "and off."
+  R
+:AANOTE9
+  17 2 GOTO C OBFLUSH C "A branched-chain amino acid and one of the"
+  18 2 GOTO C OBFLUSH C "most common in proteins; it gives the leucine"
+  19 2 GOTO C OBFLUSH C "zipper its name."
+  R
+:AANOTE10
+  17 2 GOTO C OBFLUSH C "Its only codon, ATG, is also the start codon,"
+  18 2 GOTO C OBFLUSH C "so almost every new protein begins with"
+  19 2 GOTO C OBFLUSH C "methionine."
+  R
+:AANOTE11
+  17 2 GOTO C OBFLUSH C "Sugar chains attach to it in N-linked"
+  18 2 GOTO C OBFLUSH C "glycosylation; the first amino acid ever"
+  19 2 GOTO C OBFLUSH C "isolated (from asparagus, 1806)."
+  R
+:AANOTE12
+  17 2 GOTO C OBFLUSH C "Its ring locks the backbone, putting kinks in"
+  18 2 GOTO C OBFLUSH C "chains; it breaks helices and is abundant in"
+  19 2 GOTO C OBFLUSH C "collagen."
+  R
+:AANOTE13
+  17 2 GOTO C OBFLUSH C "The most abundant free amino acid in the"
+  18 2 GOTO C OBFLUSH C "blood; it carries nitrogen between tissues."
+  R
+:AANOTE14
+  17 2 GOTO C OBFLUSH C "Carries a positive charge at body pH; the body"
+  18 2 GOTO C OBFLUSH C "makes the signalling molecule nitric oxide"
+  19 2 GOTO C OBFLUSH C "(NO) from it."
+  R
+:AANOTE15
+  17 2 GOTO C OBFLUSH C "A common phosphorylation site, and the key"
+  18 2 GOTO C OBFLUSH C "residue in serine proteases such as trypsin."
+  R
+:AANOTE16
+  17 2 GOTO C OBFLUSH C "Its hydroxyl group is a frequent"
+  18 2 GOTO C OBFLUSH C "phosphorylation site; it has two chiral"
+  19 2 GOTO C OBFLUSH C "centres."
+  R
+:AANOTE17
+  17 2 GOTO C OBFLUSH C "A branched-chain amino acid; valine replacing"
+  18 2 GOTO C OBFLUSH C "glutamic acid in hemoglobin causes sickle cell"
+  19 2 GOTO C OBFLUSH C "disease."
+  R
+:AANOTE18
+  17 2 GOTO C OBFLUSH C "The largest amino acid, with a single codon"
+  18 2 GOTO C OBFLUSH C "(TGG); the body makes serotonin and melatonin"
+  19 2 GOTO C OBFLUSH C "from it."
+  R
+:AANOTE19
+  17 2 GOTO C OBFLUSH C "Phosphorylated by tyrosine kinases in cell"
+  18 2 GOTO C OBFLUSH C "signalling; precursor of dopamine, adrenaline"
+  19 2 GOTO C OBFLUSH C "and thyroid hormones."
+  R
+:AANOTE20
+  STOPNOTE B
+
+:STOPNOTE                  # the three stop codons: name and note
+  24195 F 48 E STOPTAA *
+  24195 F 50 E STOPTAG *
+  24195 F 56 E STOPTGA *
+  R
+:STOPTAA
+  10 29 GOTO C BOLD C OBFLUSH C "(ochre)" RESET C
+  17 2 GOTO C OBFLUSH C "No tRNA reads it: release factors bind here"
+  18 2 GOTO C OBFLUSH C "and free the finished protein. The most common"
+  19 2 GOTO C OBFLUSH C "stop codon in E. coli."
+  R
+:STOPTAG
+  10 29 GOTO C BOLD C OBFLUSH C "(amber)" RESET C
+  17 2 GOTO C OBFLUSH C "The rarest stop codon in E. coli. Some archaea"
+  18 2 GOTO C OBFLUSH C "and bacteria read it as pyrrolysine (Pyl, O);"
+  19 2 GOTO C OBFLUSH C "labs reuse it to add new amino acids."
+  R
+:STOPTGA
+  10 29 GOTO C BOLD C OBFLUSH C "(opal)" RESET C
+  17 2 GOTO C OBFLUSH C "With a SECIS signal in the mRNA it encodes"
+  18 2 GOTO C OBFLUSH C "selenocysteine (Sec, U), the 21st amino acid;"
+  19 2 GOTO C OBFLUSH C "in mitochondria it reads as tryptophan."
+  R
+
+:AAOF                      # (codon -- amino acid index)
+  2 M AATAB A C R
+:AAINFO                    # (codon --)  "TCC: VM instruction IN, amino acid Serine (Ser/S)"
+  D 24309 T
+  BOLD C CODON C RESET C  25668  OBS C 24309 F OPNAME C
+  24309 F AAOF C D 20 E AISTOP *
+  OBFLUSH C ", amino acid " D AANAME C OBFLUSH C " (" D AA3 C 47 OBC C 24616 A F OBC C 41 OBC C
+  GREY C OBFLUSH C "   D: codon card" RESET C R
+:AISTOP
+  ! OBFLUSH C ", " 53 SETFG C OBFLUSH C "STOP codon" RESET C GREY C OBFLUSH C " - ends the protein   D: codon card" RESET C R
+
+:TCAGIX                    # (0..3 in T C A G order -- base index A C G T)
+  D TCT J
+  D 1 E TCC *
+  D 2 E TCA *
+  ! 2 R
+:TCT
+  ! 3 R
+:TCC
+  ! 1 R
+:TCA
+  ! 0 R
+
+:CARD                      # D: everything about the current codon
+  OBFLUSH C RESET C ESC C  24706  OBS C
+  1 2 GOTO C BOLD C 56 SETFG C OBFLUSH C "CODON CARD" RESET C GREY C OBFLUSH C "   standard genetic code    left/right: next codon    any key: back" RESET C
+  24195 F 24310 T 24310 F AAOF C 24311 T
+  3 2 GOTO C GREY C OBFLUSH C "DNA codon       " RESET C BOLD C
+  24310 F 4 > BASEOUT C 32 OBC C 24310 F 2 > 3 P BASEOUT C 32 OBC C 24310 F 3 P BASEOUT C RESET C
+  4 OBSP C 24310 F SETBG C 6 OBSP C RESET C 32 OBC C 24310 F HEXRGB C
+  4 2 GOTO C GREY C OBFLUSH C "mRNA codon      " RESET C
+  24310 F 4 > RNAB C 32 OBC C 24310 F 2 > 3 P RNAB C 32 OBC C 24310 F 3 P RNAB C
+  5 2 GOTO C GREY C OBFLUSH C "tRNA anticodon  " RESET C  25674  OBS C
+  3 24310 F 3 P S RNAB C 3 24310 F 2 > 3 P S RNAB C 3 24310 F 4 > S RNAB C  25678  OBS C
+  6 2 GOTO C GREY C OBFLUSH C "other strand    " RESET C  25674  OBS C
+  3 24310 F 3 P S DNAB C 3 24310 F 2 > 3 P S DNAB C 3 24310 F 4 > S DNAB C  25678  OBS C
+  GREY C OBFLUSH C "  (reverse complement)" RESET C
+  7 2 GOTO C GREY C OBFLUSH C "GC content      " RESET C
+  24310 F 4 > GCB C 24310 F 2 > 3 P GCB C A 24310 F 3 P GCB C A
+  D OBN C OBFLUSH C " of 3 bases (" 100 M + 3 V OBN C  25682  OBS C
+  8 2 GOTO C GREY C OBFLUSH C "VM instruction  " RESET C 24310 F OPNAME C
+  10 2 GOTO C GREY C OBFLUSH C "amino acid      " RESET C BOLD C 24311 F AANAME C RESET C
+  24311 F 20 E CDSTOP *
+   25685  OBS C 24311 F AA3 C  25689  OBS C 24311 F 24616 A F OBC C 41 OBC C
+:CDSTOP
+  11 2 GOTO C GREY C OBFLUSH C "side chain      " RESET C 24311 F AASIDE C
+  12 2 GOTO C GREY C OBFLUSH C "mass            " RESET C 24311 F AAMASS C
+  13 2 GOTO C GREY C OBFLUSH C "essential       " RESET C 24311 F AAESS C
+  14 2 GOTO C GREY C OBFLUSH C "codons          " RESET C
+  0 24312 T 0 24313 T
+:CDSYN                     # every codon for the same amino acid
+  OBROOM C
+  24313 F 64 / CDSYND *
+  24313 F AAOF C 24311 F = CDSYNX *
+  24312 PSTO
+  24313 F 24310 F E CDSYNB *
+  24313 F CODON C RESET C 32 OBC C CDSYNX B
+:CDSYNB
+  91 OBC C BOLD C 24313 F CODON C RESET C 93 OBC C 32 OBC C
+:CDSYNX
+  24313 PSTO CDSYN B
+:CDSYND
+  15 18 GOTO C GREY C 24312 F OBN C OBFLUSH C " of the 64 codons" RESET C
+  24311 F AANOTE C
+  24310 F 14 E CDSTART *
+  CDTABLE B
+:CDSTART
+  20 2 GOTO C 29 SETFG C OBFLUSH C "ATG is also the START codon: proteins begin here." RESET C
+:CDTABLE                   # the whole code, T C A G order, each codon in its own colour
+  2 42 GOTO C GREY C OBFLUSH C "2nd base    T      C      A      G" RESET C
+  0 24314 T
+:CDTR
+  24314 F 16 / CDTEND *
+  24314 F 3 A 52 GOTO C
+  0 24315 T
+:CDTC
+  OBROOM C
+  24315 F 4 / CDTRN *
+  24314 F 2 > TCAGIX C 16 M 24315 F TCAGIX C 4 M A 24314 F 3 P TCAGIX C A 24316 T
+  24316 F CONTRAST C SETFG C 24316 F SETBG C
+  24316 F 24310 F E CDTCUR *
+  24316 F AAOF C 24311 F E CDTSYN *
+  32 OBC C CDTCELL B
+:CDTCUR
+  62 OBC C CDTCELL B
+:CDTSYN
+  43 OBC C
+:CDTCELL
+  24316 F 4 > 24611 A F OBC C 24316 F 2 > 3 P 24611 A F OBC C 24316 F 3 P 24611 A F OBC C
+  32 OBC C 24316 F AAOF C 24616 A F OBC C 32 OBC C
+  RESET C 24315 PSTO CDTC B
+:CDTRN
+  24314 PSTO CDTR B
+:CDTEND
+  20 52 GOTO C GREY C OBFLUSH C "> this codon  + synonym" RESET C
+  21 52 GOTO C GREY C OBFLUSH C "* = stop codon" RESET C
+  23 2 GOTO C GREY C OBFLUSH C "colour = codon: 1st base red, 2nd green, 3rd blue  (A C G T = 0 85 170 255)" RESET C
+  OBFLUSH C
+  0 4145 T 2 TSYS C CDOUT J
+  4149 F 1003 E CDNEXT *
+  4149 F 1004 E CDPREV *
+  4149 F 1002 E CDNEXT16 *
+  4149 F 1001 E CDPREV16 *
+:CDOUT
+  FULLDRAW C R
+:CDNEXT
+  24195 F + 63 P 24195 T CARD B
+:CDPREV
+  24195 F 63 A 63 P 24195 T CARD B
+:CDNEXT16
+  24195 F 16 A 63 P 24195 T CARD B
+:CDPREV16
+  24195 F 48 A 63 P 24195 T CARD B
+:RNAB                      # (base --)  as RNA: T is shown as U
+  D 3 E RNAU *
+  24611 A F OBC C R
+:RNAU
+  ! 85 OBC C R
+:DNAB                      # (base --)
+  24611 A F OBC C R
+:GCB                       # (base -- 1 if C or G)
+  D 1 E SWAP 2 E O R
+
+
+# =====================================================================
+#  help screen
+# =====================================================================
+:HELP
+  RESET C ESC C  24706  OBS C 1 1 GOTO C
+  BOLD C 56 SETFG C  25693  OBS C RESET C OBFLUSH C "  -  every colour is a codon, every codon is a colour"
+  3 3 GOTO C BOLD C  25704  OBS C RESET C
+  OBFLUSH C "  A C G T: type three bases   [ ] prev/next   I pick up   click palette"
+  4 3 GOTO C BOLD C  25711  OBS C RESET C
+  OBFLUSH C "    arrows move (PgUp PgDn Home End: 8)   space paint   mouse: left paints"
+  5 3 GOTO C OBFLUSH C "        right button picks a colour   P pen down/up   1-9 brush size   * spray"
+  6 3 GOTO C OBFLUSH C "        L R B O  line, rectangle, filled box, circle: press at one end, move,"
+  7 3 GOTO C OBFLUSH C "        press again (or space)  F fill  M mirror  Z rainbow pen  Esc cancel"
+  9 3 GOTO C BOLD C  25716  OBS C RESET C
+  OBFLUSH C "   picture = the image (what is saved).  screen = the drawing area here."
+  10 3 GOTO C OBFLUSH C "        W  picture size: Enter/Tab re-wrap (keep the pixel sequence) or"
+  11 3 GOTO C OBFLUSH C "           crop/pad (keep x,y)     ( )  picture width - 1 / + 1, re-wrapped"
+  12 3 GOTO C OBFLUSH C "        #  screen size (Tab: the biggest that fits; zoom the terminal out)"
+  13 3 GOTO C OBFLUSH C "        0  fit (stretch the picture over the screen) / 1:1 (true size, scroll)"
+  14 3 GOTO C OBFLUSH C "        N  new blank picture of any size, up to 1024x1024"
+  16 3 GOTO C BOLD C  25722  OBS C RESET C
+  OBFLUSH C "   X fill with a formula (8 of them)   V every pixel to the next codon"
+  18 3 GOTO C BOLD C  25728  OBS C RESET C
+  OBFLUSH C "     E open a .fa at any size   ( ) re-wraps it: repeats line up as stripes"
+  19 3 GOTO C OBFLUSH C "        longer than the picture: arrows PgUp PgDn scroll  < > frame  K keep"
+  20 3 GOTO C OBFLUSH C "        D codon card: the biology of the current colour"
+  22 3 GOTO C BOLD C  25732  OBS C RESET C
+  OBFLUSH C "    S save .fa + .bmp   U undo   Y redo   Q quit"
+  24 3 GOTO C GREY C  25737  OBS C RESET C OBFLUSH C
+  0 4145 T 2 TSYS C !
+  FULLDRAW C R
+
+# =====================================================================
+#  main loop
+# =====================================================================
+:MAIN
+  # ---- write the string table into memory (generated) ----
+  76 24330 T  73 24331 T  84 24332 T  32 24333 T  69 24334 T  81 24335 T  32 24336 T  65 24337 T   # opnames
+  68 24338 T  68 24339 T  32 24340 T  78 24341 T  79 24342 T  84 24343 T  32 24344 T  65 24345 T
+  66 24346 T  83 24347 T  32 24348 T  77 24349 T  73 24350 T  78 24351 T  32 24352 T  68 24353 T
+  69 24354 T  80 24355 T  84 24356 T  72 24357 T  32 24358 T  77 24359 T  65 24360 T  88 24361 T
+  32 24362 T  84 24363 T  85 24364 T  67 24365 T  75 24366 T  32 24367 T  68 24368 T  73 24369 T
+  86 24370 T  32 24371 T  80 24372 T  73 24373 T  67 24374 T  75 24375 T  32 24376 T  68 24377 T
+  85 24378 T  80 24379 T  32 24380 T  76 24381 T  69 24382 T  32 24383 T  71 24384 T  69 24385 T
+  32 24386 T  77 24387 T  85 24388 T  76 24389 T  32 24390 T  78 24391 T  69 24392 T  32 24393 T
+  82 24394 T  65 24395 T  78 24396 T  68 24397 T  32 24398 T  83 24399 T  72 24400 T  82 24401 T
+  32 24402 T  73 24403 T  78 24404 T  67 24405 T  32 24406 T  83 24407 T  72 24408 T  76 24409 T
+  32 24410 T  68 24411 T  82 24412 T  79 24413 T  80 24414 T  32 24415 T  78 24416 T  69 24417 T
+  71 24418 T  32 24419 T  71 24420 T  69 24421 T  84 24422 T  67 24423 T  32 24424 T  77 24425 T
+  79 24426 T  68 24427 T  32 24428 T  82 24429 T  79 24430 T  84 24431 T  32 24432 T  74 24433 T
+  78 24434 T  90 24435 T  32 24436 T  78 24437 T  73 24438 T  80 24439 T  32 24440 T  68 24441 T
+  69 24442 T  67 24443 T  32 24444 T  88 24445 T  79 24446 T  82 24447 T  32 24448 T  79 24449 T
+  86 24450 T  69 24451 T  82 24452 T  32 24453 T  83 24454 T  87 24455 T  65 24456 T  80 24457 T
+  32 24458 T  83 24459 T  84 24460 T  79 24461 T  82 24462 T  69 24463 T  32 24464 T  80 24465 T
+  83 24466 T  84 24467 T  79 24468 T  32 24469 T  66 24470 T  79 24471 T  79 24472 T  76 24473 T
+  32 24474 T  85 24475 T  78 24476 T  68 24477 T  69 24478 T  82 24479 T  32 24480 T  84 24481 T
+  83 24482 T  87 24483 T  80 24484 T  32 24485 T  79 24486 T  78 24487 T  69 24488 T  32 24489 T
+  90 24490 T  69 24491 T  82 24492 T  79 24493 T  32 24494 T  67 24495 T  82 24496 T  32 24497 T
+  73 24498 T  78 24499 T  86 24500 T  32 24501 T  83 24502 T  73 24503 T  71 24504 T  78 24505 T
+  32 24506 T  78 24507 T  82 24508 T  79 24509 T  76 24510 T  76 24511 T  32 24512 T  77 24513 T
+  65 24514 T  68 24515 T  68 24516 T  32 24517 T  82 24518 T  68 24519 T  82 24520 T  79 24521 T
+  80 24522 T  32 24523 T  84 24524 T  79 24525 T  82 24526 T  32 24527 T  68 24528 T  68 24529 T
+  82 24530 T  79 24531 T  80 24532 T  32 24533 T  82 24534 T  70 24535 T  82 24536 T  79 24537 T
+  77 24538 T  32 24539 T  68 24540 T  68 24541 T  85 24542 T  80 24543 T  32 24544 T  72 24545 T
+  65 24546 T  76 24547 T  84 24548 T  32 24549 T  81 24550 T  85 24551 T  73 24552 T  84 24553 T
+  32 24554 T  78 24555 T  79 24556 T  80 24557 T  32 24558 T  80 24559 T  85 24560 T  84 24561 T
+  78 24562 T  32 24563 T  74 24564 T  90 24565 T  32 24566 T  73 24567 T  78 24568 T  32 24569 T
+  80 24570 T  85 24571 T  84 24572 T  67 24573 T  32 24574 T  83 24575 T  85 24576 T  66 24577 T
+  32 24578 T  79 24579 T  82 24580 T  32 24581 T  82 24582 T  69 24583 T  84 24584 T  32 24585 T
+  65 24586 T  78 24587 T  68 24588 T  32 24589 T  67 24590 T  65 24591 T  76 24592 T  76 24593 T
+  32 24594 T  74 24595 T  77 24596 T  80 24597 T  32 24598 T  76 24599 T  84 24600 T  32 24601 T
+  71 24602 T  84 24603 T  32 24604 T  70 24605 T  69 24606 T  84 24607 T  67 24608 T  72 24609 T
+  0 24610 T
+  65 24611 T  67 24612 T  71 24613 T  84 24614 T  0 24615 T   # bases
+  65 24616 T  67 24617 T  68 24618 T  69 24619 T  70 24620 T  71 24621 T  72 24622 T  73 24623 T   # aa1
+  75 24624 T  76 24625 T  77 24626 T  78 24627 T  80 24628 T  81 24629 T  82 24630 T  83 24631 T
+  84 24632 T  86 24633 T  87 24634 T  89 24635 T  42 24636 T  0 24637 T
+  112 24638 T  97 24639 T  105 24640 T  110 24641 T  116 24642 T  105 24643 T  110 24644 T  103 24645 T   # s_paint
+  0 24646 T
+  226 24647 T  148 24648 T  140 24649 T  0 24650 T   # b_tl
+  226 24651 T  148 24652 T  144 24653 T  0 24654 T   # b_tr
+  226 24655 T  148 24656 T  148 24657 T  0 24658 T   # b_bl
+  226 24659 T  148 24660 T  152 24661 T  0 24662 T   # b_br
+  226 24663 T  148 24664 T  128 24665 T  0 24666 T   # b_h
+  226 24667 T  148 24668 T  130 24669 T  0 24670 T   # b_v
+  226 24671 T  150 24672 T  128 24673 T  0 24674 T   # b_half
+  226 24675 T  150 24676 T  136 24677 T  0 24678 T   # b_thumb
+  48 24679 T  59 24680 T  51 24681 T  56 24682 T  59 24683 T  53 24684 T  59 24685 T  50 24686 T   # _s0
+  52 24687 T  53 24688 T  109 24689 T  0 24690 T
+  49 24691 T  109 24692 T  0 24693 T   # _s1
+  70 24694 T  70 24695 T  0 24696 T   # _s2
+  48 24697 T  48 24698 T  0 24699 T   # _s3
+  53 24700 T  53 24701 T  0 24702 T   # _s4
+  65 24703 T  65 24704 T  0 24705 T   # _s5
+  50 24706 T  74 24707 T  0 24708 T   # _s6
+  32 24709 T  71 24710 T  65 24711 T  84 24712 T  67 24713 T  32 24714 T  80 24715 T  65 24716 T   # _s7
+  73 24717 T  78 24718 T  84 24719 T  32 24720 T  0 24721 T
+  50 24722 T  75 24723 T  0 24724 T   # _s8
+  112 24725 T  105 24726 T  99 24727 T  32 24728 T  0 24729 T   # _s9
+  115 24730 T  99 24731 T  114 24732 T  32 24733 T  0 24734 T   # _s10
+  49 24735 T  58 24736 T  49 24737 T  32 24738 T  97 24739 T  116 24740 T  32 24741 T  0 24742 T   # _s11
+  102 24743 T  105 24744 T  116 24745 T  32 24746 T  0 24747 T   # _s12
+  99 24748 T  111 24749 T  108 24750 T  111 24751 T  117 24752 T  114 24753 T  32 24754 T  0 24755 T   # _s13
+  99 24756 T  111 24757 T  100 24758 T  111 24759 T  110 24760 T  32 24761 T  32 24762 T  0 24763 T   # _s14
+  111 24764 T  112 24765 T  99 24766 T  111 24767 T  100 24768 T  101 24769 T  32 24770 T  0 24771 T   # _s15
+  114 24772 T  103 24773 T  98 24774 T  32 24775 T  32 24776 T  32 24777 T  32 24778 T  0 24779 T   # _s16
+  97 24780 T  109 24781 T  105 24782 T  110 24783 T  111 24784 T  32 24785 T  32 24786 T  0 24787 T   # _s17
+  116 24788 T  111 24789 T  111 24790 T  108 24791 T  32 24792 T  32 24793 T  32 24794 T  0 24795 T   # _s18
+  98 24796 T  114 24797 T  117 24798 T  115 24799 T  104 24800 T  32 24801 T  32 24802 T  0 24803 T   # _s19
+  109 24804 T  105 24805 T  114 24806 T  114 24807 T  111 24808 T  114 24809 T  32 24810 T  0 24811 T   # _s20
+  111 24812 T  102 24813 T  102 24814 T  0 24815 T   # _s21
+  52 24816 T  45 24817 T  119 24818 T  97 24819 T  121 24820 T  0 24821 T   # _s22
+  108 24822 T  101 24823 T  102 24824 T  116 24825 T  45 24826 T  114 24827 T  105 24828 T  103 24829 T   # _s23
+  104 24830 T  116 24831 T  0 24832 T
+  112 24833 T  101 24834 T  110 24835 T  32 24836 T  32 24837 T  32 24838 T  32 24839 T  0 24840 T   # _s24
+  117 24841 T  112 24842 T  0 24843 T   # _s25
+  100 24844 T  111 24845 T  119 24846 T  110 24847 T  0 24848 T   # _s26
+  114 24849 T  97 24850 T  105 24851 T  110 24852 T  98 24853 T  119 24854 T  32 24855 T  0 24856 T   # _s27
+  111 24857 T  110 24858 T  0 24859 T   # _s28
+  120 24860 T  44 24861 T  121 24862 T  32 24863 T  32 24864 T  32 24865 T  32 24866 T  0 24867 T   # _s29
+  99 24868 T  105 24869 T  114 24870 T  99 24871 T  108 24872 T  101 24873 T  0 24874 T   # _s30
+  112 24875 T  101 24876 T  110 24877 T  0 24878 T   # _s31
+  108 24879 T  105 24880 T  110 24881 T  101 24882 T  0 24883 T   # _s32
+  114 24884 T  101 24885 T  99 24886 T  116 24887 T  0 24888 T   # _s33
+  98 24889 T  111 24890 T  120 24891 T  0 24892 T   # _s34
+  32 24893 T  112 24894 T  105 24895 T  120 24896 T  101 24897 T  108 24898 T  115 24899 T  32 24900 T   # _s35
+  46 24901 T  46 24902 T  46 24903 T  0 24904 T
+  109 24905 T  97 24906 T  116 24907 T  104 24908 T  115 24909 T  58 24910 T  32 24911 T  0 24912 T   # _s36
+  120 24913 T  32 24914 T  116 24915 T  105 24916 T  109 24917 T  101 24918 T  115 24919 T  32 24920 T   # _s37
+  121 24921 T  0 24922 T
+  32 24923 T  32 24924 T  32 24925 T  40 24926 T  117 24927 T  112 24928 T  32 24929 T  116 24930 T   # _s38
+  111 24931 T  32 24932 T  0 24933 T
+  116 24934 T  111 24935 T  111 24936 T  32 24937 T  98 24938 T  105 24939 T  103 24940 T  58 24941 T   # _s39
+  32 24942 T  116 24943 T  104 24944 T  101 24945 T  32 24946 T  109 24947 T  111 24948 T  115 24949 T
+  116 24950 T  32 24951 T  105 24952 T  115 24953 T  32 24954 T  0 24955 T
+  110 24956 T  101 24957 T  119 24958 T  32 24959 T  112 24960 T  105 24961 T  99 24962 T  116 24963 T   # _s40
+  117 24964 T  114 24965 T  101 24966 T  58 24967 T  32 24968 T  0 24969 T
+  69 24970 T  110 24971 T  116 24972 T  101 24973 T  114 24974 T  58 24975 T  32 24976 T  110 24977 T   # _s41
+  101 24978 T  119 24979 T  32 24980 T  98 24981 T  108 24982 T  97 24983 T  110 24984 T  107 24985 T
+  32 24986 T  112 24987 T  105 24988 T  99 24989 T  116 24990 T  117 24991 T  114 24992 T  101 24993 T
+  32 24994 T  32 24995 T  32 24996 T  32 24997 T  69 24998 T  115 24999 T  99 25000 T  58 25001 T
+  32 25002 T  99 25003 T  97 25004 T  110 25005 T  99 25006 T  101 25007 T  108 25008 T  0 25009 T
+  110 25010 T  101 25011 T  119 25012 T  32 25013 T  112 25014 T  105 25015 T  99 25016 T  116 25017 T   # _s42
+  117 25018 T  114 25019 T  101 25020 T  32 25021 T  0 25022 T
+  32 25023 T  32 25024 T  40 25025 T  119 25026 T  97 25027 T  115 25028 T  32 25029 T  0 25030 T   # _s43
+  112 25031 T  105 25032 T  99 25033 T  116 25034 T  117 25035 T  114 25036 T  101 25037 T  32 25038 T   # _s44
+  115 25039 T  105 25040 T  122 25041 T  101 25042 T  58 25043 T  32 25044 T  0 25045 T
+  69 25046 T  110 25047 T  116 25048 T  101 25049 T  114 25050 T  58 25051 T  32 25052 T  99 25053 T   # _s45
+  114 25054 T  111 25055 T  112 25056 T  47 25057 T  112 25058 T  97 25059 T  100 25060 T  44 25061 T
+  32 25062 T  112 25063 T  105 25064 T  99 25065 T  116 25066 T  117 25067 T  114 25068 T  101 25069 T
+  32 25070 T  115 25071 T  116 25072 T  97 25073 T  121 25074 T  115 25075 T  32 25076 T  112 25077 T
+  117 25078 T  116 25079 T  32 25080 T  32 25081 T  32 25082 T  32 25083 T  84 25084 T  97 25085 T
+  98 25086 T  58 25087 T  32 25088 T  114 25089 T  101 25090 T  45 25091 T  119 25092 T  114 25093 T
+  97 25094 T  112 25095 T  32 25096 T  105 25097 T  116 25098 T  32 25099 T  108 25100 T  105 25101 T
+  107 25102 T  101 25103 T  32 25104 T  97 25105 T  32 25106 T  68 25107 T  78 25108 T  65 25109 T
+  32 25110 T  115 25111 T  116 25112 T  114 25113 T  97 25114 T  110 25115 T  100 25116 T  32 25117 T
+  32 25118 T  32 25119 T  32 25120 T  69 25121 T  115 25122 T  99 25123 T  0 25124 T
+  69 25125 T  110 25126 T  116 25127 T  101 25128 T  114 25129 T  58 25130 T  32 25131 T  114 25132 T   # _s46
+  101 25133 T  45 25134 T  119 25135 T  114 25136 T  97 25137 T  112 25138 T  32 25139 T  116 25140 T
+  104 25141 T  101 25142 T  32 25143 T  68 25144 T  78 25145 T  65 25146 T  32 25147 T  97 25148 T
+  116 25149 T  32 25150 T  116 25151 T  104 25152 T  101 25153 T  32 25154 T  110 25155 T  101 25156 T
+  119 25157 T  32 25158 T  119 25159 T  105 25160 T  100 25161 T  116 25162 T  104 25163 T  32 25164 T
+  32 25165 T  32 25166 T  32 25167 T  84 25168 T  97 25169 T  98 25170 T  58 25171 T  32 25172 T
+  99 25173 T  114 25174 T  111 25175 T  112 25176 T  47 25177 T  112 25178 T  97 25179 T  100 25180 T
+  32 25181 T  119 25182 T  104 25183 T  97 25184 T  116 25185 T  32 25186 T  105 25187 T  115 25188 T
+  32 25189 T  111 25190 T  110 25191 T  32 25192 T  115 25193 T  99 25194 T  114 25195 T  101 25196 T
+  101 25197 T  110 25198 T  32 25199 T  32 25200 T  32 25201 T  32 25202 T  69 25203 T  115 25204 T
+  99 25205 T  0 25206 T
+  112 25207 T  105 25208 T  99 25209 T  116 25210 T  117 25211 T  114 25212 T  101 25213 T  32 25214 T   # _s47
+  0 25215 T
+  32 25216 T  45 25217 T  62 25218 T  32 25219 T  0 25220 T   # _s48
+  115 25221 T  99 25222 T  114 25223 T  101 25224 T  101 25225 T  110 25226 T  32 25227 T  115 25228 T   # _s49
+  105 25229 T  122 25230 T  101 25231 T  58 25232 T  32 25233 T  0 25234 T
+  69 25235 T  110 25236 T  116 25237 T  101 25238 T  114 25239 T  58 25240 T  32 25241 T  117 25242 T   # _s50
+  115 25243 T  101 25244 T  32 25245 T  116 25246 T  104 25247 T  105 25248 T  115 25249 T  32 25250 T
+  115 25251 T  105 25252 T  122 25253 T  101 25254 T  32 25255 T  32 25256 T  32 25257 T  32 25258 T
+  84 25259 T  97 25260 T  98 25261 T  58 25262 T  32 25263 T  116 25264 T  104 25265 T  101 25266 T
+  32 25267 T  98 25268 T  105 25269 T  103 25270 T  103 25271 T  101 25272 T  115 25273 T  116 25274 T
+  32 25275 T  116 25276 T  104 25277 T  105 25278 T  115 25279 T  32 25280 T  116 25281 T  101 25282 T
+  114 25283 T  109 25284 T  105 25285 T  110 25286 T  97 25287 T  108 25288 T  32 25289 T  102 25290 T
+  105 25291 T  116 25292 T  115 25293 T  32 25294 T  32 25295 T  32 25296 T  32 25297 T  69 25298 T
+  115 25299 T  99 25300 T  32 25301 T  32 25302 T  40 25303 T  122 25304 T  111 25305 T  111 25306 T
+  109 25307 T  32 25308 T  116 25309 T  104 25310 T  101 25311 T  32 25312 T  116 25313 T  101 25314 T
+  114 25315 T  109 25316 T  105 25317 T  110 25318 T  97 25319 T  108 25320 T  32 25321 T  111 25322 T
+  117 25323 T  116 25324 T  32 25325 T  102 25326 T  111 25327 T  114 25328 T  32 25329 T  109 25330 T
+  111 25331 T  114 25332 T  101 25333 T  41 25334 T  0 25335 T
+  115 25336 T  99 25337 T  114 25338 T  101 25339 T  101 25340 T  110 25341 T  32 25342 T  0 25343 T   # _s51
+  32 25344 T  32 25345 T  32 25346 T  112 25347 T  105 25348 T  99 25349 T  116 25350 T  117 25351 T   # _s52
+  114 25352 T  101 25353 T  32 25354 T  0 25355 T
+  115 25356 T  97 25357 T  118 25358 T  101 25359 T  32 25360 T  97 25361 T  115 25362 T  58 25363 T   # _s53
+  32 25364 T  0 25365 T
+  46 25366 T  102 25367 T  97 25368 T  0 25369 T   # _s54
+  62 25370 T  71 25371 T  65 25372 T  84 25373 T  67 25374 T  112 25375 T  97 25376 T  105 25377 T   # _s55
+  110 25378 T  116 25379 T  32 25380 T  0 25381 T
+  46 25382 T  98 25383 T  109 25384 T  112 25385 T  0 25386 T   # _s56
+  115 25387 T  97 25388 T  118 25389 T  101 25390 T  100 25391 T  32 25392 T  0 25393 T   # _s57
+  46 25394 T  102 25395 T  97 25396 T  32 25397 T  40 25398 T  68 25399 T  78 25400 T  65 25401 T   # _s58
+  41 25402 T  32 25403 T  43 25404 T  32 25405 T  0 25406 T
+  32 25407 T  32 25408 T  32 25409 T  0 25410 T   # _s59
+  32 25411 T  112 25412 T  105 25413 T  120 25414 T  101 25415 T  108 25416 T  115 25417 T  44 25418 T   # _s60
+  32 25419 T  98 25420 T  109 25421 T  112 25422 T  32 25423 T  0 25424 T
+  99 25425 T  111 25426 T  117 25427 T  108 25428 T  100 25429 T  32 25430 T  110 25431 T  111 25432 T   # _s61
+  116 25433 T  32 25434 T  119 25435 T  114 25436 T  105 25437 T  116 25438 T  101 25439 T  32 25440 T
+  0 25441 T
+  111 25442 T  112 25443 T  101 25444 T  110 25445 T  58 25446 T  32 25447 T  0 25448 T   # _s62
+  32 25449 T  99 25450 T  111 25451 T  100 25452 T  111 25453 T  110 25454 T  115 25455 T  32 25456 T   # _s63
+  45 25457 T  32 25458 T  112 25459 T  105 25460 T  99 25461 T  116 25462 T  117 25463 T  114 25464 T
+  101 25465 T  32 25466 T  115 25467 T  105 25468 T  122 25469 T  101 25470 T  58 25471 T  32 25472 T
+  0 25473 T
+  69 25474 T  110 25475 T  116 25476 T  101 25477 T  114 25478 T  58 25479 T  32 25480 T  111 25481 T   # _s64
+  112 25482 T  101 25483 T  110 25484 T  32 25485 T  97 25486 T  116 25487 T  32 25488 T  116 25489 T
+  104 25490 T  105 25491 T  115 25492 T  32 25493 T  115 25494 T  105 25495 T  122 25496 T  101 25497 T
+  32 25498 T  40 25499 T  97 25500 T  110 25501 T  121 25502 T  32 25503 T  115 25504 T  105 25505 T
+  122 25506 T  101 25507 T  58 25508 T  32 25509 T  116 25510 T  104 25511 T  101 25512 T  32 25513 T
+  68 25514 T  78 25515 T  65 25516 T  32 25517 T  119 25518 T  114 25519 T  97 25520 T  112 25521 T
+  115 25522 T  32 25523 T  97 25524 T  116 25525 T  32 25526 T  116 25527 T  104 25528 T  101 25529 T
+  32 25530 T  119 25531 T  105 25532 T  100 25533 T  116 25534 T  104 25535 T  41 25536 T  32 25537 T
+  32 25538 T  32 25539 T  32 25540 T  69 25541 T  115 25542 T  99 25543 T  58 25544 T  32 25545 T
+  99 25546 T  97 25547 T  110 25548 T  99 25549 T  101 25550 T  108 25551 T  0 25552 T
+  111 25553 T  112 25554 T  101 25555 T  110 25556 T  101 25557 T  100 25558 T  32 25559 T  0 25560 T   # _s65
+  32 25561 T  97 25562 T  116 25563 T  32 25564 T  0 25565 T   # _s66
+  99 25566 T  111 25567 T  117 25568 T  108 25569 T  100 25570 T  32 25571 T  110 25572 T  111 25573 T   # _s67
+  116 25574 T  32 25575 T  111 25576 T  112 25577 T  101 25578 T  110 25579 T  32 25580 T  0 25581 T
+  114 25582 T  101 25583 T  97 25584 T  100 25585 T  105 25586 T  110 25587 T  103 25588 T  32 25589 T   # _s68
+  46 25590 T  46 25591 T  46 25592 T  32 25593 T  0 25594 T
+  32 25595 T  98 25596 T  97 25597 T  115 25598 T  101 25599 T  115 25600 T  0 25601 T   # _s69
+  71 25602 T  65 25603 T  84 25604 T  67 25605 T  112 25606 T  97 25607 T  105 25608 T  110 25609 T   # _s70
+  116 25610 T  32 25611 T  0 25612 T
+  98 25613 T  97 25614 T  115 25615 T  101 25616 T  32 25617 T  0 25618 T   # _s71
+  32 25619 T  32 25620 T  0 25621 T   # _s72
+  102 25622 T  105 25623 T  108 25624 T  101 25625 T  32 25626 T  32 25627 T  32 25628 T  0 25629 T   # _s73
+  102 25630 T  114 25631 T  111 25632 T  109 25633 T  32 25634 T  98 25635 T  97 25636 T  115 25637 T   # _s74
+  101 25638 T  0 25639 T
+  111 25640 T  102 25641 T  32 25642 T  0 25643 T   # _s75
+  102 25644 T  114 25645 T  97 25646 T  109 25647 T  101 25648 T  32 25649 T  32 25650 T  0 25651 T   # _s76
+  75 25652 T  32 25653 T  107 25654 T  101 25655 T  101 25656 T  112 25657 T  32 25658 T  32 25659 T   # _s77
+  69 25660 T  115 25661 T  99 25662 T  32 25663 T  116 25664 T  111 25665 T  111 25666 T  0 25667 T
+  58 25668 T  32 25669 T  86 25670 T  77 25671 T  32 25672 T  0 25673 T   # _s78
+  53 25674 T  39 25675 T  45 25676 T  0 25677 T   # _s79
+  45 25678 T  51 25679 T  39 25680 T  0 25681 T   # _s80
+  37 25682 T  41 25683 T  0 25684 T   # _s81
+  32 25685 T  32 25686 T  40 25687 T  0 25688 T   # _s82
+  32 25689 T  47 25690 T  32 25691 T  0 25692 T   # _s83
+  71 25693 T  65 25694 T  84 25695 T  67 25696 T  32 25697 T  80 25698 T  65 25699 T  73 25700 T   # _s84
+  78 25701 T  84 25702 T  0 25703 T
+  99 25704 T  111 25705 T  108 25706 T  111 25707 T  117 25708 T  114 25709 T  0 25710 T   # _s85
+  100 25711 T  114 25712 T  97 25713 T  119 25714 T  0 25715 T   # _s86
+  115 25716 T  105 25717 T  122 25718 T  101 25719 T  115 25720 T  0 25721 T   # _s87
+  109 25722 T  97 25723 T  116 25724 T  104 25725 T  115 25726 T  0 25727 T   # _s88
+  68 25728 T  78 25729 T  65 25730 T  0 25731 T   # _s89
+  102 25732 T  105 25733 T  108 25734 T  101 25735 T  0 25736 T   # _s90
+  112 25737 T  114 25738 T  101 25739 T  115 25740 T  115 25741 T  32 25742 T  97 25743 T  110 25744 T   # _s91
+  121 25745 T  32 25746 T  107 25747 T  101 25748 T  121 25749 T  0 25750 T
+  63 25751 T  49 25752 T  48 25753 T  52 25754 T  57 25755 T  104 25756 T  0 25757 T   # _s92
+  63 25758 T  55 25759 T  108 25760 T  0 25761 T   # _s93
+  63 25762 T  50 25763 T  53 25764 T  108 25765 T  0 25766 T   # _s94
+  63 25767 T  49 25768 T  48 25769 T  48 25770 T  50 25771 T  104 25772 T  0 25773 T   # _s95
+  63 25774 T  49 25775 T  48 25776 T  48 25777 T  54 25778 T  104 25779 T  0 25780 T   # _s96
+  63 25781 T  49 25782 T  48 25783 T  48 25784 T  50 25785 T  108 25786 T  0 25787 T   # _s97
+  63 25788 T  49 25789 T  48 25790 T  48 25791 T  54 25792 T  108 25793 T  0 25794 T   # _s98
+  63 25795 T  50 25796 T  53 25797 T  104 25798 T  0 25799 T   # _s99
+  63 25800 T  55 25801 T  104 25802 T  0 25803 T   # _s100
+  63 25804 T  49 25805 T  48 25806 T  52 25807 T  57 25808 T  108 25809 T  0 25810 T   # _s101
+  99 25811 T  111 25812 T  100 25813 T  111 25814 T  110 25815 T  58 25816 T  32 25817 T  0 25818 T   # _s102
+  32 25819 T  95 25820 T  0 25821 T   # _s103
+  32 25822 T  95 25823 T  32 25824 T  95 25825 T  0 25826 T   # _s104
+  117 25827 T  110 25828 T  100 25829 T  111 25830 T  58 25831 T  32 25832 T  112 25833 T  105 25834 T   # _s105
+  99 25835 T  116 25836 T  117 25837 T  114 25838 T  101 25839 T  32 25840 T  98 25841 T  97 25842 T
+  99 25843 T  107 25844 T  32 25845 T  116 25846 T  111 25847 T  32 25848 T  0 25849 T
+  114 25850 T  101 25851 T  100 25852 T  111 25853 T  58 25854 T  32 25855 T  112 25856 T  105 25857 T   # _s106
+  99 25858 T  116 25859 T  117 25860 T  114 25861 T  101 25862 T  32 25863 T  0 25864 T
+  4153 F 18516 E TTYOK *
+  4153 F 1 E TTYOFF *
+  "paint.aa needs GATCnux.py (version 4.4 or later) for keyboard and screen access." CR 1 Q
+:TTYOFF
+  "paint.aa needs the terminal bridge. Run it with --tty (and --fs to save):" CR
+  "  python3 GATCnux.py run paint.aa --no-banner --tty --fs --max-steps 2000000000" CR 1 Q
+:TTYOK
+  12345 4200 T 4200 F 12345 E HOSTOK *
+  "paint.aa needs GATCnux.py 4.4 or later (pictures live in the file-backed memory)." CR 1 Q
+:HOSTOK
+  0 24128 T
+  XTINIT C BTINIT C TBLINIT C
+  2097168 0 0 HSET C 11 HOST C ! 14 HOST C !
+  60 24136 T 40 24137 T SETNP C WRITEHDR C
+  60 24154 T 40 24156 T 1 24158 T
+  56 24195 T 1 24198 T 30 24168 T 20 24169 T 99999 24147 T 0 1 S 24148 T
+  1 4145 T 1 TSYS C !
+  ESC C  25751  OBS C ESC C  25758  OBS C ESC C  25762  OBS C ESC C  25767  OBS C ESC C  25774  OBS C
+  TERMSIZE C 24150 F 24262 T 24151 F 24263 T
+  LAYOUT C FULLDRAW C
+  MSG C OBFLUSH C "hello! type three bases (try G C A) to pick a colour, arrows + space to paint"
+  OBFLUSH C
+:LOOP
+  24300 F STASHED *
+  500 4145 T 2 TSYS C GOTKEY *
+  4149 F 1 E QUITNOW *
+  CHECKTERM C OBFLUSH C
+  LOOP B
+:STASHED                   # a key read while merging mouse drags
+  0 24300 T 24301 F 24298 T 24302 F 24317 T 24303 F 24318 T 24304 F 24319 T GOTK2 B
+:GOTKEY
+  4149 F 24298 T 4150 F 24317 T 4151 F 24318 T 4152 F 24319 T
+:GOTK2
+  24298 F 2000 = GOTK3 *
+  24319 F 32 P GOTK3 J
+:MERGE                     # skip drag reports that are already waiting: draw to the newest
+  1 4145 T 2 TSYS C GOTK3 J
+  4149 F 2000 E 4152 F 32 P BOOL P MERGE1 *
+  1 24300 T 4149 F 24301 T 4150 F 24302 T 4151 F 24303 T 4152 F 24304 T GOTK3 B
+:MERGE1
+  4150 F 24317 T 4151 F 24318 T 4152 F 24319 T MERGE B
+:GOTK3
+  KEYS C
+  FLUSHDIRTY C PANEL C OBFLUSH C
+  24320 F QUITNOW *
+  LOOP B
+:QUITNOW
+  RESET C ESC C  25781  OBS C ESC C  25788  OBS C ESC C  25795  OBS C ESC C  25800  OBS C ESC C  25804  OBS C
+  OBFLUSH C 0 4145 T 1 TSYS C !
+  "bye from GATC PAINT" CR H
+
+:MOVETO                    # (x y --)  move the cursor, clamped to the picture
+  0 MAX 24137 F - MIN 24321 T 0 MAX 24136 F - MIN 24322 T
+  24169 F PXDIRTY C
+  24322 F 24168 T 24321 F 24169 T
+  24169 F PXDIRTY C
+  24188 F MTANC J
+  24171 F PXDIRTY C
+:MTANC
+  FOLLOW C
+  24200 F MTRET J
+  24168 F 24169 F STAMP C
+:MTRET
+  R
+
+:KEYS
+  24298 F 97 L KNOLOW *
+  24298 F 122 G KNOLOW *
+  24298 F 32 S 24298 T
+:KNOLOW
+  24197 F VKEYS *
+  24298 F 1001 E KUP *
+  24298 F 1002 E KDOWN *
+  24298 F 1003 E KRIGHT *
+  24298 F 1004 E KLEFT *
+  24298 F 1007 E KPGUP *
+  24298 F 1008 E KPGDN *
+  24298 F 1005 E KHOME *
+  24298 F 1006 E KEND *
+  24298 F 2000 E KMOUSE *
+  24298 F 2002 E KPREV *
+  24298 F 2003 E KNEXT *
+  24298 F 65 E KBA *
+  24298 F 67 E KBC *
+  24298 F 71 E KBG *
+  24298 F 84 E KBT *
+  24298 F 32 E KSPACE *
+  24298 F 10 E KSPACE *
+  24298 F 27 E KESC *
+  24298 F 80 E KPEN *
+  24298 F 76 E KLINE *
+  24298 F 82 E KRECT *
+  24298 F 66 E KBOX *
+  24298 F 79 E KCIRC *
+  24298 F 70 E KFILL *
+  24298 F 73 E KPICK *
+  24298 F 77 E KMIRROR *
+  24298 F 90 E KRAINBOW *
+  24298 F 88 E KMATHS *
+  24298 F 86 E KCYCLE *
+  24298 F 85 E KUNDO *
+  24298 F 89 E KREDO *
+  24298 F 78 E KNEW *
+  24298 F 87 E KPICSIZE *
+  24298 F 35 E KSCREEN *
+  24298 F 40 E KWDN *
+  24298 F 41 E KWUP *
+  24298 F 48 E KFIT *
+  24298 F 83 E KSAVE *
+  24298 F 69 E KLOAD *
+  24298 F 72 E KHELP *
+  24298 F 63 E KHELP *
+  24298 F 68 E KCARD *
+  24298 F 81 E KQUIT *
+  24298 F 42 E KSPRAY *
+  24298 F 91 E KPREV *
+  24298 F 93 E KNEXT *
+  24298 F 49 L KNONUM *
+  24298 F 57 G KNONUM *
+  24298 F 48 S 24198 T R
+:KNONUM
+  R
+
+:KUP
+  24168 F 24169 F - MOVETO C R
+:KDOWN
+  24168 F 24169 F + MOVETO C R
+:KRIGHT
+  24168 F + 24169 F MOVETO C R
+:KLEFT
+  24168 F - 24169 F MOVETO C R
+:KPGUP
+  24168 F 24169 F 8 S MOVETO C R
+:KPGDN
+  24168 F 24169 F 8 A MOVETO C R
+:KHOME
+  24168 F 8 S 24169 F MOVETO C R
+:KEND
+  24168 F 8 A 24169 F MOVETO C R
+:KWDN
+  0 1 S KWIDTH B
+:KWUP
+  1 KWIDTH B
+
+:KBA
+  0 KBASE B
+:KBC
+  1 KBASE B
+:KBG
+  2 KBASE B
+:KBT
+  3
+:KBASE                     # (base --)
+  24323 F 4 M A 24323 T 24324 PSTO
+  24324 F 3 E KBDONE *
+  MSG C  25811  OBS C BOLD C
+  24324 F 1 E KB1 *
+  24323 F 2 > BASEOUT C 24323 F 3 P BASEOUT C RESET C  25819  OBS C R
+:KB1
+  24323 F BASEOUT C RESET C  25822  OBS C R
+:KBDONE
+  24323 F 24195 T 0 24323 T 0 24324 T
+  MSG C 24195 F AAINFO C R
+
+:KSPACE
+  24188 F KSTOOL *
+  DSNAP C 24168 F 24169 F STAMP C R
+:KSTOOL
+  DSNAP C
+  24188 F 1 E KTLINE *
+  24188 F 2 E KTRECT *
+  24188 F 3 E KTBOX *
+  CIRCLE C KTDONE B
+:KTLINE
+  24170 F 24171 F 24168 F 24169 F LINE C KTDONE B
+:KTRECT
+  RECT C KTDONE B
+:KTBOX
+  BOX C
+:KTDONE
+  24171 F PXDIRTY C 0 24188 T MSG C R
+:KESC
+  24188 F KEANC J
+  24171 F PXDIRTY C
+:KEANC
+  0 24188 T 0 24323 T 0 24324 T 0 24200 T MSG C R
+:KTOOL                     # (tool --)  first press: anchor, same key again: draw
+  D 24188 F E KTSAME *
+  24188 F KTNEW J
+  24171 F PXDIRTY C
+:KTNEW
+  24188 T 24168 F 24170 T 24169 F 24171 T 24171 F PXDIRTY C
+  MSG C OBFLUSH C "move to the other end and press the same key again (or space); Esc cancels" R
+:KTSAME
+  ! KSTOOL B
+:KLINE
+  1 KTOOL B
+:KRECT
+  2 KTOOL B
+:KBOX
+  3 KTOOL B
+:KCIRC
+  4 KTOOL B
+
+:KPEN
+  24200 F N D 24200 T KPUP J
+  DSNAP C 24168 F 24169 F STAMP C
+:KPUP
+  R
+:KFILL
+  DSNAP C FILL C
+  24232 F KFOK J
+  MSG C OBFLUSH C "that area was too intricate to fill completely - press F again inside the gaps"
+:KFOK
+  R
+:KPICK
+  24168 F 24169 F GETPX C 24195 T MSG C 24195 F AAINFO C R
+:KMIRROR
+  24199 F + 3 MOD 24199 T R
+:KRAINBOW
+  24201 F N 24201 T R
+:KMATHS
+  MATHS C R
+:KCYCLE
+  DSNAP C CYCLE C R
+:KUNDO
+  6 HOST C KUNONE J
+  READHDR C KUSIZE *
+  ALLDIRTY C MSG C OBFLUSH C "undo (Y redoes it)" R
+:KUSIZE
+  0 24197 T RELAYOUT C MSG C  25827  OBS C 24136 F 24137 F OBSZ C R
+:KUNONE
+  MSG C OBFLUSH C "nothing more to undo" R
+:KREDO
+  13 HOST C KRNONE J
+  READHDR C KRSIZE *
+  ALLDIRTY C MSG C OBFLUSH C "redo" R
+:KRSIZE
+  0 24197 T RELAYOUT C MSG C  25850  OBS C 24136 F 24137 F OBSZ C R
+:KRNONE
+  MSG C OBFLUSH C "nothing to redo" R
+:KSPRAY
+  DSNAP C SPRAY C R
+:KPREV
+  24195 F 63 A 63 P 24195 T R
+:KNEXT
+  24195 F + 63 P 24195 T R
+:KSAVE
+  SAVE C R
+:KLOAD
+  OPENFA C R
+:KHELP
+  HELP C R
+:KCARD
+  CARD C R
+:KQUIT
+  24142 F KQGO J
+  MSG C 53 SETFG C OBFLUSH C "quit without saving? y / n" RESET C OBFLUSH C
+  0 4145 T 2 TSYS C ! 4149 F 32 O 121 = KQNO *
+:KQGO
+  1 24320 T R
+:KQNO
+  MSG C R
+
+:CLICKPX                   # ( -- ok)  mouse cell -> picture pixel $mpx,$mpy (top) and $mpy2 (bottom half)
+  24317 F 2 L CPNO *
+  24317 F 24164 F + G CPNO *
+  24318 F 2 L CPNO *
+  24318 F 24149 F + G CPNO *
+  24317 F 2 S 24159 F M 24160 F V 24161 F A 24136 F - MIN 24307 T
+  24318 F 2 S 2 M D 24145 F M 24144 F V 24143 F A 24137 F - MIN 24308 T
+  + D 24157 F L CPBOT *
+  ! 24308 F 24325 T 1 R
+:CPBOT
+  24145 F M 24144 F V 24143 F A 24137 F - MIN 24325 T 1 R
+:CPNO
+  0 R
+:KMOUSE
+  24319 F 3 P 24326 T
+  CLICKPX C KMPAL J
+  24326 F 2 E KMPICK *
+  24188 F KMTOOL *
+  24319 F 32 P KMDRAG *
+  DSNAP C
+  24307 F 24308 F STAMP C
+  24325 F 24308 F E KMSET *
+  24307 F 24325 F STAMP C
+  KMSET B
+:KMDRAG
+  24327 F 24328 F 24307 F 24308 F LINE C
+  24329 F 24328 F E 24325 F 24308 F E P KMSET *
+  24327 F 24329 F 24307 F 24325 F LINE C
+:KMSET
+  24307 F 24327 T 24308 F 24328 T 24325 F 24329 T
+  24200 F 24307 F 24308 F 0 24200 T MOVETO C 24200 T R
+:KMTOOL
+  24319 F 32 P KMRET *
+  24307 F 24308 F MOVETO C KSTOOL B
+:KMPICK
+  24307 F 24308 F GETPX C 24195 T R
+:KMPAL
+  24317 F 24165 F L KMRET *
+  24317 F 24165 F 15 A G KMRET *
+  24318 F 2 L KMRET *
+  24318 F 9 G KMRET *
+  24318 F 2 S 8 M 24317 F 24165 F S 2 V A 24195 T
+:KMRET
+  R
