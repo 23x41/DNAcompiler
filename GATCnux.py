@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Optional
 import os, zlib, collections
 import socket, ssl, struct, time, ipaddress, re
-VERSION = "4.3.0-tty"
+VERSION = "4.4.0-64k"
 BANNER = r"""
   ____    _  _____ ____  __ _  _
  / ___|  / \|_   _/ ___|/ /| || |
@@ -70,7 +70,16 @@ CODON_TO_OP={
 "AAT":"NOT","AAC":"EQ","AAA":"LIT","AAG":"ADD","AGT":"DUP","AGC":"DIV","AGA":"TUCK","AGG":"PICK",
 "GTT":"DDUP","GTC":"DDROP","GTA":"TOR","GTG":"RFROM","GCT":"INV","GCC":"ZERO","GCA":"ONE","GCG":"CR",
 "GAT":"TSWP","GAC":"BOOL","GAA":"PSTO","GAG":"UNDER","GGT":"RDROP","GGC":"NROLL","GGA":"SIGN","GGG":"MADD"}
-MEM_SIZE,STACK_LIMIT,CALL_LIMIT,STEP_LIMIT_DEFAULT=4096,65536,4096,5_000_000
+MEM_SIZE,STACK_LIMIT,CALL_LIMIT,STEP_LIMIT_DEFAULT=65536,65536,4096,5_000_000
+# Memory: cells 0..4095 and 4160..65535 are ordinary RAM (65,472 cells).  4096..4159 is the device
+# window (editor, net, fs and tty control cells), so programs written for the old 4096-cell VM keep
+# every address.  65536.. is the file-backed byte space (FILE_BASE).
+HOLE_LO,HOLE_HI=4096,4160
+def mem_ok(addr, n, size=MEM_SIZE):
+    "True if cells addr..addr+n-1 are all RAM (no device window, nothing past the end)"
+    return 0 <= addr and n >= 0 and addr + n <= size and (addr + n <= HOLE_LO or addr >= HOLE_HI)
+def ram(addr, size=MEM_SIZE):
+    return 0 <= addr < size and not (HOLE_LO <= addr < HOLE_HI)
 # --- file-backed address space (used by hexeditor.aa) -----------------------------------
 # FETCH/STORE at FILE_BASE+n read/write byte n of the file given with --file (up to 1 GiB).
 # Cells 4096.. are control cells.  STORE a command number into CTL_CMD to run a bulk operation
@@ -401,10 +410,10 @@ class NetKit:
         """remote text is untrusted: no terminal escape sequences or other control characters"""
         return re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", ".", text.replace("\r", ""))
     def cs(self, addr, maxlen=255):
-        if not (0 <= addr < len(self.mem)): return ""
+        if not ram(addr, len(self.mem)): return ""
         chars = []
         for i in range(maxlen):
-            if addr + i >= len(self.mem): break
+            if not ram(addr + i, len(self.mem)): break
             v = self.mem[addr + i]
             if v == 0: break
             chars.append(chr(v) if 0 < v < 0x110000 else "?")
@@ -769,7 +778,7 @@ class NetKit:
         return (1, int(ms), 0)
     def c_send(self, addr, n):
         if self.sock is None: self.w("error: not connected\n"); return (0, 0, 0)
-        if not (0 <= n <= 4096 and 0 <= addr and addr + n <= len(self.mem)): self.w("error: bad send buffer\n"); return (0, 0, 0)
+        if not (0 <= n <= 4096 and mem_ok(addr, n, len(self.mem))): self.w("error: bad send buffer\n"); return (0, 0, 0)
         try: self.sock.settimeout(10); self.sock.sendall(bytes(self.mem[addr + i] & 0xFF for i in range(n)))
         except (OSError, ssl.SSLError) as e:
             self.w("send failed: %s\n" % self._why(e, "")); self.close(); return (0, 0, 0)
@@ -908,10 +917,10 @@ class FSKit:
     # ------------------------------------------------------------ helpers
     def cs(self, addr, maxlen=FS_IO_MAX):
         """NUL-terminated byte string at addr -> str path (round-trips any byte via fsdecode)"""
-        if not (0 <= addr < len(self.mem)): raise OSError(14, "bad address")
+        if not ram(addr, len(self.mem)): raise OSError(14, "bad address")
         b = bytearray()
         for i in range(maxlen):
-            if addr + i >= len(self.mem): break
+            if not ram(addr + i, len(self.mem)): break
             v = self.mem[addr + i]
             if v == 0: break
             b.append(v & 0xFF)
@@ -923,8 +932,8 @@ class FSKit:
 
     def put(self, dest, maxlen, data):
         """write bytes + NUL into VM memory, truncated to fit; returns the length written"""
-        if maxlen <= 0 or not (0 <= dest < len(self.mem)): return 0
-        maxlen = min(maxlen, len(self.mem) - dest)
+        if maxlen <= 0 or not ram(dest, len(self.mem)): return 0
+        maxlen = min(maxlen, (HOLE_LO if dest < HOLE_LO else len(self.mem)) - dest)
         data = data[:maxlen - 1]
         for i, c in enumerate(data): self.mem[dest + i] = c
         self.mem[dest + len(data)] = 0
@@ -1042,7 +1051,7 @@ class FSKit:
         self.fds[h] = os.open(p, flags | getattr(os, "O_BINARY", 0), 0o666)
         return (h,)
     def _buf(self, addr, n):
-        if not (0 <= n <= FS_IO_MAX and 0 <= addr and addr + n <= len(self.mem)): raise OSError(14, "bad buffer")
+        if not (0 <= n <= FS_IO_MAX and mem_ok(addr, n, len(self.mem))): raise OSError(14, "bad buffer")
     def c10(self, a1, a2, a3, a4):    # read
         self._buf(a2, a3)
         if a1 not in self.fds: raise OSError(9, "bad file handle")
@@ -1284,7 +1293,7 @@ class TTYKit:
             else: buf.write(data); buf.flush()
         except (OSError, ValueError): pass
     def c3(self, a1, a2, a3):
-        if not (0 <= a2 <= 65536 and 0 <= a1 and a1 + a2 <= len(self.mem)): raise OSError(14, "bad buffer")
+        if not (0 <= a2 <= 65536 and mem_ok(a1, a2, len(self.mem))): raise OSError(14, "bad buffer")
         self.out(bytes(self.mem[a1 + i] & 0xFF for i in range(a2)))
         return (a2,)
     def c4(self, a1, a2, a3):
@@ -1319,9 +1328,10 @@ class VM:
         except OSError as e:
             print(f"error: cannot open {path}: {e}", file=sys.stderr)
             return
-        n = min(len(data), len(self.mem) - addr)
-        for i in range(n):
-            self.mem[addr + i] = data[i]
+        n = 0
+        for i in range(len(data)):
+            if not ram(addr + i, len(self.mem)): break
+            self.mem[addr + i] = data[i]; n += 1
         print(f"loaded {n} bytes from {path} at address {addr}", file=sys.stderr)
     # ---------------- file-backed address space ----------------
     def load_edit_file(self, path):
@@ -1345,7 +1355,7 @@ class VM:
         self.file = buf; self.filepath = path
         print(f"opened {path}: {len(self.file)} bytes", file=sys.stderr)
     def fetch(self, addr):
-        if 0 <= addr < len(self.mem): return self.mem[addr]
+        if 0 <= addr < HOLE_LO or HOLE_HI <= addr < MEM_SIZE: return self.mem[addr]
         if addr >= FILE_BASE:
             i = addr - FILE_BASE
             return self.file[i] if i < len(self.file) else 0
@@ -1357,7 +1367,7 @@ class VM:
         if addr == CTL_TMAGIC: return TTY_MAGIC if self.tty is not None else 1   # 1 = supported but off (no --tty)
         return self.ctl.get(addr, 0)
     def store(self, addr, val):
-        if 0 <= addr < len(self.mem): self.mem[addr] = val; return
+        if 0 <= addr < HOLE_LO or HOLE_HI <= addr < MEM_SIZE: self.mem[addr] = val; return
         if addr >= FILE_BASE:
             i, v = addr - FILE_BASE, val & 0xFF
             n = len(self.file)
@@ -1477,7 +1487,7 @@ class VM:
                     del self.file[off:off + cnt]; self.dirty = 1
                 c[CTL_R1] = cnt; c[CTL_STATUS] = 1
         elif cmd == 4:
-            if 0 < cnt <= 64 and 0 <= a3 and a3 + cnt <= len(self.mem) and off >= 0:
+            if 0 < cnt <= 64 and mem_ok(a3, cnt, len(self.mem)) and off >= 0:
                 pat = bytes(v & 0xFF for v in self.mem[a3:a3 + cnt]); i = self.file.find(pat, off)
                 if i >= 0: c[CTL_R1] = i; c[CTL_STATUS] = 1
         elif cmd == 5:
@@ -1636,12 +1646,12 @@ class VM:
             addr,val=self.pop(),self.pop(); self.store(addr,val); self.pc+=1
         elif op=="PSTO":
             addr=self.pop()
-            if 0<=addr<len(self.mem): self.mem[addr]+=1
+            if 0<=addr<HOLE_LO or HOLE_HI<=addr<MEM_SIZE: self.mem[addr]+=1
             else: warn(f"psto out of bounds {addr}")
             self.pc+=1
         elif op=="MADD":
             addr,n=self.pop(),self.pop()
-            if 0<=addr<len(self.mem): self.mem[addr]+=n
+            if 0<=addr<HOLE_LO or HOLE_HI<=addr<MEM_SIZE: self.mem[addr]+=n
             else: warn(f"madd out of bounds {addr}")
             self.pc+=1
         elif op=="PUTC":
